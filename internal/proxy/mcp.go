@@ -55,8 +55,17 @@ type ToolCallParams struct {
 
 // ContentBlock is one MCP content item; v1 handles text blocks.
 type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
+	Type     string         `json:"type"`
+	Text     string         `json:"text,omitempty"`
+	Resource *ResourceBlock `json:"resource,omitempty"`
+}
+
+// ResourceBlock is an MCP embedded-resource content item; its text is
+// upstream-controlled like any other content.
+type ResourceBlock struct {
+	URI      string `json:"uri,omitempty"`
+	MIMEType string `json:"mimeType,omitempty"`
+	Text     string `json:"text,omitempty"`
 }
 
 // ToolCallResult is the MCP tools/call result shape.
@@ -106,6 +115,10 @@ func TextFromResult(raw json.RawMessage) string {
 	for _, c := range r.Content {
 		if c.Type == "text" || c.Type == "" {
 			sb.WriteString(c.Text)
+			sb.WriteString("\n")
+		}
+		if c.Resource != nil && c.Resource.Text != "" {
+			sb.WriteString(c.Resource.Text)
 			sb.WriteString("\n")
 		}
 	}

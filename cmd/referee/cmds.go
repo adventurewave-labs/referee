@@ -128,7 +128,6 @@ func cmdPolicy(args []string) error {
 func cmdApprove(args []string) error {
 	fs := flag.NewFlagSet("approve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:8200", "dashboard address")
-	token := fs.String("token", os.Getenv("REF_DASHBOARD_TOKEN"), "dashboard bearer token")
 	id := fs.String("challenge-id", "", "challenge id (required)")
 	approver := fs.String("approver", os.Getenv("USER"), "approver name (must be on the tool allowlist)")
 	allow := fs.Bool("allow", false, "approve")
@@ -142,13 +141,22 @@ func cmdApprove(args []string) error {
 	if *allow == *deny {
 		return fmt.Errorf("approve: exactly one of --allow / --deny")
 	}
+	token := os.Getenv("REF_DASHBOARD_TOKEN")
+	if token == "" {
+		if b, err := os.ReadFile("referee-dashboard-token"); err == nil {
+			token = string(bytes.TrimSpace(b))
+		}
+	}
+	if token == "" {
+		return fmt.Errorf("approve: no dashboard token — set REF_DASHBOARD_TOKEN (or run where serve wrote referee-dashboard-token)")
+	}
 	body, _ := json.Marshal(map[string]any{"approver": *approver, "approve": *allow})
 	url := fmt.Sprintf("http://%s/api/challenge/%s/resolve", *addr, *id)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+*token)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

@@ -227,6 +227,7 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				Error: &RPCError{Code: CodeInternalError, Message: err.Error()}})
 			return
 		}
+		e.IngestUpstream(sess, resp.Result)
 		writeJSON(w, http.StatusOK, resp)
 	})
 	return mux

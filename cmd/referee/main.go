@@ -20,7 +20,7 @@ usage:
   referee serve --policy p.yaml [--mode stdio|http] [--upstream-cmd "cmd args"]
                 [--upstream-url URL] [--listen 127.0.0.1:8199]
                 [--task-id ID --task-class CLASS] [--challenge-mode local|slack] [--slack-channel C] [--slack-hook-addr ADDR]
-                [--dashboard 127.0.0.1:8200] [--dashboard-token T]
+                [--dashboard 127.0.0.1:8200]
                 [--log referee-receipts.jsonl] [--heads referee-heads.jsonl]
                 [--seed referee-receipt.seed] [--hmac-key .args-hmac-key]
   referee verify --log FILE [--heads FILE] [--pubkey FILE]
@@ -28,11 +28,13 @@ usage:
   referee policy check --policy p.yaml
   referee policy diff --policy a.yaml --policy b.yaml
   referee demo
-  referee approve --addr 127.0.0.1:8200 --token T --challenge-id ID
+  referee approve --addr 127.0.0.1:8200 --challenge-id ID
                   --approver NAME [--allow | --deny]
 
 environment:
   REF_RECEIPT_HMAC            args-HMAC key (hex or raw) — else --hmac-key file
+  REF_DASHBOARD_TOKEN         dashboard bearer token — else generated into
+                              referee-dashboard-token (0600); never argv/logs
   REF_SLACK_BOT_TOKEN         slack bot token (challenge-mode slack)
   REF_SLACK_SIGNING_SECRET    slack signing secret
 

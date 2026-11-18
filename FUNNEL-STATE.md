@@ -106,3 +106,22 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
   mid-round-2 (roster: builders are GLM); GLM completed the remaining
   findings #2/#3/#4 + tests over SSH on the same lane. Reviewer stays codex.
 - CI: go 1.22 vet+build+test+bench GREEN (containment 36.8µs/op, budget 5ms).
+
+## Gate round 3 log (2026-11-18)
+
+- Round 2 (claude reviewer): REVISE — 3 blocking findings, all closed:
+  1. Secrets in argv/logs: --dashboard-token / approve --token flags removed
+     (env REF_DASHBOARD_TOKEN, else generated into referee-dashboard-token
+     0600; serve logs the path only). Usage text updated.
+  2. Integrity fail-open: non-tools/call upstream payloads (tools/list
+     descriptions, resources, prompts, initialize instructions) are now
+     ingested as untrusted blocks (Engine.IngestUpstream hooked into both
+     transports); embedded-resource text extracted by TextFromResult too.
+  3. verify could not see a pubkey: serve now exports referee-pubkey.hex
+     (0644) at startup and the dashboard verifies signatures for EVERY
+     caller, not just authed ones.
+- Non-blocking findings (HTTP session map aliasing/races, bash-glob
+  scoping vs docs, dashboard approver identity, excerpt truncation edge,
+  unused consensus flag, AGENTS.md review-lane grammar) — listed for the
+  PR description as known items, not fixed in this round.
+- CI: green (vet/build/test/bench, containment 49µs/op vs 5ms budget).

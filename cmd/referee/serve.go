@@ -40,7 +40,6 @@ func cmdServe(args []string) error {
 	slackChannel := fs.String("slack-channel", "", "slack channel for challenges")
 	slackHook := fs.String("slack-hook-addr", "127.0.0.1:8201", "listen address for slack interactive endpoint")
 	dashAddr := fs.String("dashboard", "", "dashboard address (local challenge mode defaults to 127.0.0.1:8200)")
-	dashToken := fs.String("dashboard-token", os.Getenv("REF_DASHBOARD_TOKEN"), "dashboard bearer token (generated + printed when empty)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -75,6 +74,12 @@ func cmdServe(args []string) error {
 	if err != nil {
 		return err
 	}
+	// export the receipt pubkey: verify/dashboard need it to check batch-head
+	// signatures — without an exported key they silently degrade to the
+	// unkeyed chain, and a recomputed-hash rewrite would read OK (finding #3)
+	if err := os.WriteFile("referee-pubkey.hex", []byte(hex.EncodeToString(pub)+"\n"), 0o644); err != nil {
+		return fmt.Errorf("serve: writing receipt pubkey: %w", err)
+	}
 	rcp, err := receipts.Open(*logPath, *headsPath, hmacKey, priv, 100)
 	if err != nil {
 		return err
@@ -108,15 +113,22 @@ func cmdServe(args []string) error {
 		return fmt.Errorf("serve: unknown challenge-mode %q", *challengeMode)
 	}
 
-	// dashboard + local approver surface
-	if *dashToken == "" {
-		*dashToken = randomToken()
-		logger.Printf("dashboard token (generated): %s", *dashToken)
+	// dashboard + local approver surface. The token never travels argv or
+	// logs (repo invariant): REF_DASHBOARD_TOKEN env, else generated into a
+	// 0600 file whose PATH — never its contents — is logged (finding #1).
+	dashToken := os.Getenv("REF_DASHBOARD_TOKEN")
+	if dashToken == "" {
+		dashToken = randomToken()
+		const tpath = "referee-dashboard-token"
+		if err := os.WriteFile(tpath, []byte(dashToken+"\n"), 0o600); err != nil {
+			return fmt.Errorf("serve: writing dashboard token file: %w", err)
+		}
+		logger.Printf("dashboard token (generated) written to %s (0600)", tpath)
 	}
 	registry := proxy.NewRegistry()
 	registry.WithAlive(func(task string) bool { return eng.Caps.Get(task) != nil })
 	dash := dashboard.New(dashboard.Deps{
-		LogPath: *logPath, HeadsPath: *headsPath, PubKey: pub, Token: *dashToken,
+		LogPath: *logPath, HeadsPath: *headsPath, PubKey: pub, Token: dashToken,
 		ReceiptsKey: hmacKey, Challenges: mgr,
 		Sessions: func() []dashboard.SessionInfo {
 			stats := registry.Stats()

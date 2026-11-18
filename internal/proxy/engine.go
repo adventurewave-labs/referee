@@ -201,3 +201,50 @@ func (e *Engine) EndTask(sess *Session) bool {
 	}
 	return killed
 }
+
+// IngestUpstream labels every text-bearing payload the upstream sends the
+// agent outside a gated tools/call — tool descriptions (the classic
+// tool-poisoning vector), resources/read, prompts/get, initialize
+// instructions — as untrusted. Upstream-controlled content never enters the
+// shadow context unlabeled: the integrity axis must not fail open on
+// transport shape (round-2 finding #2).
+func (e *Engine) IngestUpstream(sess *Session, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return
+	}
+	for _, text := range collectPayloadText(v, 0) {
+		sess.AddBlock("upstream", labels.TrustUntrusted, labels.SensNormal, text)
+	}
+}
+
+// collectPayloadText gathers strings under the text-bearing keys of an
+// upstream payload, bounded in depth.
+func collectPayloadText(v any, depth int) []string {
+	if depth > 12 {
+		return nil
+	}
+	switch t := v.(type) {
+	case map[string]any:
+		var out []string
+		for k, val := range t {
+			if s, ok := val.(string); ok && len(s) > 0 &&
+				(k == "text" || k == "description" || k == "instructions") {
+				out = append(out, s)
+				continue
+			}
+			out = append(out, collectPayloadText(val, depth+1)...)
+		}
+		return out
+	case []any:
+		var out []string
+		for _, item := range t {
+			out = append(out, collectPayloadText(item, depth+1)...)
+		}
+		return out
+	}
+	return nil
+}

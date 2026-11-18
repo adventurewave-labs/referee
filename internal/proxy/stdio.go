@@ -156,6 +156,7 @@ func RunStdioSession(e *Engine, sess *Session, r io.Reader, w io.Writer, upstrea
 			}
 			continue
 		}
+		e.IngestUpstream(sess, resp.Result)
 		if err := sendAgent(resp); err != nil {
 			return err
 		}

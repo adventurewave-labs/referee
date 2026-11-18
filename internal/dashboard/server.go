@@ -193,10 +193,9 @@ func (s *Server) apiResolve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) apiVerify(w http.ResponseWriter, r *http.Request) {
-	var pub []byte
-	if s.authed(r) {
-		pub = s.deps.PubKey
-	}
+	// signatures are checked for every caller: an unauthenticated view that
+	// silently skips them fails open on tampering (finding #3)
+	pub := s.deps.PubKey
 	n, heads, err := receipts.Verify(s.deps.LogPath, s.deps.HeadsPath, pub)
 	out := map[string]any{"entries": n, "heads_verified": heads, "ok": err == nil, "heads_checked": pub != nil}
 	if err != nil {
