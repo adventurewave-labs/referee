@@ -62,106 +62,41 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
 
 ## Not done
 
-- `bash scripts/ci.sh` (bootstraps Go 1.22.10 into /tmp, then mod tidy +
-  vet + build + test + bench) — expect compile fixes; iterate until green.
-- `go.sum` generation (go mod tidy does it; copy into repo and commit).
-- Push `feat/mvp-v0.1` to origin (`funnel/referee` already pushed; the PR
-  branch is funnel/referee — reconcile or drop feat/mvp-v0.1 at PR time).
-- Rig gate: `review.sh` per constitution (builder ≠ reviewer, fail-closed)
-  before the PR.
-- Open PR on GitHub: `feat/mvp-v0.1` → `main` (repo main currently holds
-  only the bootstrap README). HUMANS MERGE — agent must not merge.
+- PR: open `funnel/referee` → `main` once the gate reaches APPROVED
+  (repo main currently holds only the bootstrap README). HUMANS MERGE.
+- Non-blocking reviewer items (tracked, not gate-blocking): HTTP session
+  map aliasing/data races; bash-glob cap scoping is advisory not a
+  boundary; dashboard approver identity is self-asserted; dashboard bearer
+  compare is not constant-time; challenge excerpt 160-byte truncation can
+  split a secret; challenge.Verified searches rules for challenge IDs that
+  never occur; ProbeConsensus flag unused; AGENTS.md review-lane grammar.
 - README license line says TBD — leave (repo stays private).
+- Optional: push `feat/mvp-v0.1` to origin (funnel/referee is the PR
+  branch; reconcile or drop feat/mvp-v0.1 at PR time).
 
 ## Next
 
-1. `cd ~/funnel/referee && bash scripts/ci.sh` — fix compile/test failures
-   until green (`go vet` first; watch for unused imports, the usual).
-   Known risk spots: engine.go wiring, stdio notification path, glob
-   backtracking, receipts hash round-trip through JSON time.
-2. Commit fixes on this branch (funnel/referee). Push:
-   `git push -u origin funnel/referee`.
-3. Run the gate (`~/turbo-rig/scripts/review.sh --base main` on the VPS per
-   rig constitution; log the verdict). Fix REVISE rounds if any (cap: 3
-   rounds on the same theme, then park and report).
-4. `gh pr create -R adventurewave-labs/referee --base main --head
-   funnel/referee --title "referee v0.1 — IFC middleware scaffold (PRD §5.1–§5.4)" `
-   with a body listing PRD sections covered + §8 regressions + known
-   limitations. Do NOT merge.
-5. Update this file as you go; leave `remote-out/` uncommitted (gitignored).
+1. Gate (`~/turbo-rig/scripts/review.sh --base main` on the VPS) — iterate
+   REVISE rounds per the rig cap (Law 11: stop and present the fork after
+   3+ rounds on the same theme).
+2. On APPROVED: `gh pr create -R adventurewave-labs/referee --base main
+   --head funnel/referee` with the PRD coverage body; DO NOT merge.
+3. `handoff.sh done 2026-11-18-funnel-referee-r3.md --push --note "PR #N
+   APPROVED, awaiting human merge"` to free the worker lane so
+   funnel-tripwire-mvp and funnel-gauntlet-bootstrap dispatch.
 
-## Gate round 2 log (2026-11-18)
+## Gate round 7 log (2026-11-18)
 
-- Round 1 (codex reviewer): REVISE — 5 findings (control-RPC authority
-  minting; per-value gate matching; empty-heads receipt bypass; challenge
-  payload disclosure; receipt-write failures not fail-closed).
-- Fixes: control-token auth for task_start/user_block (REF_CONTROL_TOKEN,
-  constant-time compare, disabled when unset) + HTTP control result shape;
-  receipts fail-closed on append error; per-argument raw-value matching in
-  the gate (JSON map escaping/wrapping defeated reverse containment);
-  empty/truncated heads file refuses verification; challenge payloads never
-  emit raw argument text (shape-only) and secret-looking hostile excerpts
-  are withheld (HMAC ref instead).
-- Builder handoff: claude worker did round-1 compile+gate then was stopped
-  mid-round-2 (roster: builders are GLM); GLM completed the remaining
-  findings #2/#3/#4 + tests over SSH on the same lane. Reviewer stays codex.
-- CI: go 1.22 vet+build+test+bench GREEN (containment 36.8µs/op, budget 5ms).
-
-## Gate round 3 log (2026-11-18)
-
-- Round 2 (claude reviewer): REVISE — 3 blocking findings, all closed:
-  1. Secrets in argv/logs: --dashboard-token / approve --token flags removed
-     (env REF_DASHBOARD_TOKEN, else generated into referee-dashboard-token
-     0600; serve logs the path only). Usage text updated.
-  2. Integrity fail-open: non-tools/call upstream payloads (tools/list
-     descriptions, resources, prompts, initialize instructions) are now
-     ingested as untrusted blocks (Engine.IngestUpstream hooked into both
-     transports); embedded-resource text extracted by TextFromResult too.
-  3. verify could not see a pubkey: serve now exports referee-pubkey.hex
-     (0644) at startup and the dashboard verifies signatures for EVERY
-     caller, not just authed ones.
-- Non-blocking findings (HTTP session map aliasing/races, bash-glob
-  scoping vs docs, dashboard approver identity, excerpt truncation edge,
-  unused consensus flag, AGENTS.md review-lane grammar) — listed for the
-  PR description as known items, not fixed in this round.
-- CI: green (vet/build/test/bench, containment 49µs/op vs 5ms budget).
-
-## Gate round 4 log (2026-11-18)
-
-- Round 3 (claude reviewer): REVISE — 5 blocking findings, all closed:
-  1. LoadPubKey now trims whitespace (serve's hex+newline file loads).
-  2. verify CLI defaults to referee-pubkey.hex and refuses an unsigned
-     check when the heads file has entries (no silent degrade).
-  3. NormalizePath resolves ~/ and relative paths to absolute — path
-     policies can no longer be dodged by spelling.
-  4. HTTP initialize responses are ingested as untrusted (hook added in
-     the initialize branch; passthrough already covered).
-  5. .gitignore mangled line (literal \n) rewritten with real newlines.
-- New regression: TestLoadPubKeyRoundTrip (serve's exported file loads).
-- CI: green (vet/build/test/bench).
-
-## Gate round 5 log (2026-11-18)
-
-- Round 4 (claude reviewer): REVISE — blocking differential-parse bypass:
-  tools/call params were gated from the Go-parsed struct but forwarded
-  upstream as raw bytes, so a duplicate/aliased "name"/"arguments" key
-  could make a lenient upstream execute an ungated call.
-- Fix: both transports now forward the canonical re-serialization of the
-  parsed params (req.Params = json.Marshal(params)) — upstream receives
-  exactly what the gate evaluated; duplicates cannot survive.
-- Regression: TestDuplicateNameKeysForwardCanonical — e2e stdio test with
-  a FIRST-wins differential upstream; with the fix the upstream receives
-  the gate-evaluated name, never the raw first key.
-- CI: green (vet/build/test/bench, containment 41µs/op).
-
-## Gate round 6 log (2026-11-18)
-
-- Round 5 (claude reviewer): REVISE — upstream error objects and
-  structuredContent text reached the agent unlabeled (integrity fail-open).
-- Fix closes the WHOLE class: IngestResponse (result + error) on both
-  transports; RPCError message/data collected; every string leaf of
-  structuredContent ingested (bounded 64 leaves/subtree); TextFromResult
-  extracts structuredContent too. All upstream→agent text is now labeled.
-- Stale FUNNEL-STATE line ("NEVER compiled") fixed — gate noticed it.
-- Unit regressions extended: error-object ingestion + structuredContent
-  leaf ingestion. CI: green.
+- Round 6 (claude reviewer): REVISE — Verify refused fresh deployments
+  (log shorter than one batch ⇒ heads file legitimately empty) and
+  FUNNEL-STATE contradicted itself.
+- Fix: Open writes a heads-meta line ({"heads_meta":{"batch":N}}) when it
+  creates the heads file; verifyHeads honors it (first line only) so the
+  empty-heads refusal now fires only when entries ≥ batch (a flush should
+  have happened) or when the meta line itself was truncated away — the
+  round-1 tamper bypass stays closed either way.
+- TestFreshDeploymentVerifies added; `make demo` smoke: "[verify] receipt
+  chain ok: 3 entries, 0 batch-head signatures verified" — the exact
+  scenario from the round-6 finding, now green.
+- FUNNEL-STATE Not done / Next rewritten to current truth.
+- CI: green.

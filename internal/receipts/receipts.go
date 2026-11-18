@@ -105,10 +105,16 @@ func Open(path, headsPath string, hmacKey []byte, priv ed25519.PrivateKey, batch
 		if uint64(len(entries))-last >= uint64(batchSize) {
 			return nil, fmt.Errorf("receipts: %d entries after the last signed head (batch %d) — heads missing or truncated", uint64(len(entries))-last, batchSize)
 		}
-		// create the heads file up front so a later deletion is detectable
+		// create the heads file up front so a later deletion is detectable;
+		// the meta line records the batch size so Verify can tell a fresh
+		// log (no batch has flushed yet) from a truncated heads file
 		hf, err := os.OpenFile(headsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			return nil, err
+		}
+		if st, serr := hf.Stat(); serr == nil && st.Size() == 0 {
+			meta, _ := json.Marshal(map[string]any{"heads_meta": map[string]int{"batch": batchSize}})
+			hf.Write(append(meta, '\n'))
 		}
 		hf.Close()
 	}
@@ -294,11 +300,25 @@ func verifyHeads(entries []Entry, headsPath string, pub ed25519.PublicKey, mustE
 	defer hf.Close()
 	heads := 0
 	var last uint64
+	metaBatch := 0
+	lineNo := 0
 	sc := bufio.NewScanner(hf)
 	for sc.Scan() {
+		lineNo++
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
+		}
+		if lineNo == 1 {
+			var meta struct {
+				HeadsMeta struct {
+					Batch int `json:"batch"`
+				} `json:"heads_meta"`
+			}
+			if json.Unmarshal([]byte(line), &meta) == nil && meta.HeadsMeta.Batch > 0 {
+				metaBatch = meta.HeadsMeta.Batch
+				continue
+			}
 		}
 		var h Head
 		if err := json.Unmarshal([]byte(line), &h); err != nil {
@@ -322,6 +342,11 @@ func verifyHeads(entries []Entry, headsPath string, pub ed25519.PublicKey, mustE
 		return heads, last, err
 	}
 	if mustExist && len(entries) > 0 && heads == 0 {
+		// a fresh log shorter than one batch has legitimately never flushed a
+		// head; beyond that, zero heads means the evidence was removed
+		if metaBatch > 0 && uint64(len(entries)) < uint64(metaBatch) {
+			return 0, 0, nil
+		}
 		return 0, 0, fmt.Errorf("receipts: heads file %s contains no signed heads — signature evidence absent", headsPath)
 	}
 	return heads, last, nil

@@ -200,3 +200,27 @@ func TestTruncatedHeadsRefused(t *testing.T) {
 		t.Fatalf("verify with an empty (truncated) heads file must fail")
 	}
 }
+
+// a fresh deployment (log shorter than one batch) has legitimately never
+// flushed a head — Verify must accept it via the heads meta line, while a
+// truncated heads file on a mature log is still refused.
+func TestFreshDeploymentVerifies(t *testing.T) {
+	logPath, headsPath := tempLog(t)
+	priv := newSigningKey(t)
+	l, err := Open(logPath, headsPath, []byte("k"), priv, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, _, err := l.Append(Record{Task: "t", Tool: "x", Rule: "r", Decision: "deny", ArgsCanonical: "{}"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, heads, err := Verify(logPath, headsPath, priv.Public().(ed25519.PublicKey))
+	if err != nil {
+		t.Fatalf("fresh log below one batch must verify: %v", err)
+	}
+	if n != 3 || heads != 0 {
+		t.Fatalf("expected 3 entries / 0 heads, got %d/%d", n, heads)
+	}
+}
