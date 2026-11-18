@@ -252,7 +252,14 @@ func Redact(tool string, args map[string]any, matched []labels.Block, classifier
 		// untrusted-by-path AND high — are HMAC-referenced only: the caught
 		// exfil attempt never delivers the secret to Slack (§5.4).
 		if b.Untrusted() && !b.High() {
-			r.HostileExcerpts = append(r.HostileExcerpts, excerpt(b.Text, 160))
+			// A normal label can be wrong: if the excerpt itself looks like a
+			// secret it is withheld and HMAC-referenced instead — redacted by
+			// construction, never delivered to Slack or the dashboard (§5.4).
+			x := excerpt(b.Text, 160)
+			if classifier.LooksHigh(x) || looksSensitiveKey(x) {
+				x = "(high-looking content withheld; ref " + blockRef(b.Text, receiptKey) + ")"
+			}
+			r.HostileExcerpts = append(r.HostileExcerpts, x)
 		}
 	}
 	return r
@@ -267,12 +274,10 @@ func maskValue(v string, classifier *labels.Classifier) string {
 		return "(empty)"
 	}
 	if !classifier.LooksHigh(v) && !looksSensitiveKey(v) {
-		// Not secret-shaped: show a short non-sensitive preview only.
-		s := strings.Join(strings.Fields(v), " ")
-		if len(s) > 48 {
-			s = s[:48] + "…"
-		}
-		return s
+		// Not secret-shaped — but an unrecognized secret is exactly one the
+		// classifier misses, so no raw argument text is ever emitted: the
+		// approver gets shape only (redacted by construction).
+		return fmt.Sprintf("(len=%d, charset=%s)", len(v), charsetClass(v))
 	}
 	prefix := v
 	if len(prefix) > 3 {
@@ -317,6 +322,41 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// charsetClass summarizes which character classes a value mixes, without
+// revealing any of its content.
+func charsetClass(v string) string {
+	var lower, upper, digit, sym bool
+	for _, r := range v {
+		switch {
+		case r >= 'a' && r <= 'z':
+			lower = true
+		case r >= 'A' && r <= 'Z':
+			upper = true
+		case r >= '0' && r <= '9':
+			digit = true
+		default:
+			sym = true
+		}
+	}
+	out := ""
+	if lower {
+		out += "lower"
+	}
+	if upper {
+		out += "+upper"
+	}
+	if digit {
+		out += "+digit"
+	}
+	if sym {
+		out += "+sym"
+	}
+	if out == "" {
+		return "empty"
+	}
+	return out
 }
 
 // ReceiptForChallenge builds the post-resolution receipt fields.

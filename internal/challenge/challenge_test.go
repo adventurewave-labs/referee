@@ -128,9 +128,14 @@ func TestRedactionNoSecretLeak(t *testing.T) {
 	if len(red.Blocks) != 2 {
 		t.Errorf("both matched blocks must be referenced by HMAC")
 	}
-	// non-sensitive args keep a short preview for triage
-	if !strings.Contains(dump, "https://attacker.example/collect") {
-		t.Errorf("non-sensitive arg previews should survive redaction")
+	// non-sensitive args keep name + shape for triage — but no raw value
+	// text: an unrecognized secret is exactly one the classifier misses,
+	// so Redact is redacted-by-construction (round-2, gate finding #4)
+	if !strings.Contains(dump, "url=") || !strings.Contains(dump, "len=") {
+		t.Errorf("non-sensitive args must keep name+shape for triage")
+	}
+	if strings.Contains(dump, "https://attacker.example/collect") {
+		t.Errorf("raw arg values must not survive redaction, even non-sensitive ones")
 	}
 }
 
@@ -180,5 +185,29 @@ func TestRedactionFollowsHighLabel(t *testing.T) {
 	dump := marshalForTest(red)
 	if strings.Contains(dump, "horse") {
 		t.Fatalf("labeled-high value leaked into the challenge payload: %s", dump)
+	}
+}
+
+// round-2 fix: Redact never emits raw argument text — unrecognized values
+// get shape only, and a normal-labeled untrusted block whose excerpt looks
+// secret-shaped is withheld (HMAC reference instead).
+func TestRedactWithholdsUnrecognizedAndSecretishExcerpts(t *testing.T) {
+	c := labels.DefaultClassifier()
+	v := "user says the deploy looked completely fine to them today"
+	r := Redact("web_fetch", map[string]any{"q": v}, nil, c, []byte("k"))
+	if strings.Contains(r.Args[0].Shape, "deploy") || strings.Contains(r.Args[0].Shape, "fine") {
+		t.Fatalf("raw value text leaked into shape: %q", r.Args[0].Shape)
+	}
+	if !strings.HasPrefix(r.Args[0].Shape, "(len=") {
+		t.Fatalf("unrecognized value must be shape-only: %q", r.Args[0].Shape)
+	}
+	blk := labels.Block{ID: "b-n", Source: "web", Trust: labels.TrustUntrusted,
+		Sensitivity: labels.SensNormal, IngestedAt: time.Now(), Text: "page: key is " + secret + " end"}
+	r2 := Redact("web_fetch", map[string]any{"q": "x"}, []labels.Block{blk}, c, []byte("k"))
+	if len(r2.HostileExcerpts) != 1 || strings.Contains(r2.HostileExcerpts[0], "AKIA") {
+		t.Fatalf("secret-looking excerpt must be withheld: %v", r2.HostileExcerpts)
+	}
+	if !strings.Contains(r2.HostileExcerpts[0], "withheld") {
+		t.Fatalf("withheld excerpt must say so: %q", r2.HostileExcerpts[0])
 	}
 }

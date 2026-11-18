@@ -58,6 +58,13 @@ func (g *Gate) Evaluate(in Input, token *caps.Token, blocks []labels.Block) Deci
 	argText := string(argsJSON)
 
 	matches := g.Matcher.Matches(argText, blocks)
+	// JSON marshaling escapes <, >, & (\u003c, \u0026, ...), so a secret span
+	// containing such a byte survives only in the raw value — the map pass
+	// misses it at the escape seam. Match each argument's raw string form too
+	// and union the hits (deduped by BlockID below).
+	for _, v := range in.Args {
+		matches = append(matches, g.Matcher.Matches(fmt.Sprintf("%v", v), blocks)...)
+	}
 	byID := map[string]labels.Block{}
 	var matched []labels.Block
 	var ids []string

@@ -183,3 +183,20 @@ func TestMissingHeadsRefused(t *testing.T) {
 		t.Fatalf("reopen with heads missing for a full batch must fail")
 	}
 }
+
+// truncating the heads file to zero bytes must fail verification exactly
+// like deleting it — an empty heads file is absent signature evidence.
+func TestTruncatedHeadsRefused(t *testing.T) {
+	logPath, headsPath := tempLog(t)
+	priv := newSigningKey(t)
+	l, _ := Open(logPath, headsPath, []byte("k"), priv, 2)
+	for i := 0; i < 4; i++ {
+		l.Append(Record{Task: "t", Tool: "x", Rule: "r", Decision: "deny", ArgsCanonical: "{}"})
+	}
+	if err := os.WriteFile(headsPath, []byte{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Verify(logPath, headsPath, priv.Public().(ed25519.PublicKey)); err == nil {
+		t.Fatalf("verify with an empty (truncated) heads file must fail")
+	}
+}

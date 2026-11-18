@@ -160,10 +160,11 @@ func testEngineWith(t *testing.T, f *policy.File) *Engine {
 		// call made while untrusted content sits in the shadow context
 		Gate: &gate.Gate{Policy: pol, Matcher: labels.NewMatcher(), Classifier: labels.DefaultClassifier(),
 			Probe: probe.New([]probe.Judge{&probe.MockJudge{TaintWhen: []string{"ignore previous"}}}, time.Second, time.Now)},
-		Caps:       caps.NewStore(time.Now),
-		Receipts:   rcp,
-		Challenges: challenge.NewManager(time.Second, []byte("test"), time.Now),
-		ReceiptKey: []byte("test"),
+		Caps:         caps.NewStore(time.Now),
+		Receipts:     rcp,
+		Challenges:   challenge.NewManager(time.Second, []byte("test"), time.Now),
+		ReceiptKey:   []byte("test"),
+		ControlToken: []byte("ctl-test"),
 	}
 }
 
@@ -216,7 +217,7 @@ func TestStdioPipeline(t *testing.T) {
 		t.Fatalf("initialize passthrough broken: %+v", resp)
 	}
 
-	write("2", "referee/task_start", `{"task_id":"t1","task_class":"ops"}`)
+	write("2", "referee/task_start", `{"task_id":"t1","task_class":"ops","control_token":"ctl-test"}`)
 	mustResp("2")
 
 	write("3", "tools/list", `{}`)
@@ -334,9 +335,28 @@ func TestHTTPPipeline(t *testing.T) {
 		t.Fatalf("initialize broken: %+v", resp)
 	}
 
-	resp = post("2", "referee/task_start", `{"task_id":"t1","task_class":"ops"}`, "sess-123")
+	// privileged control RPCs need the operator's control token
+	resp = post("2a", "referee/task_start", `{"task_id":"t1","task_class":"ops"}`, "sess-123")
+	if resp.Error == nil {
+		t.Fatalf("task_start without control token must be refused: %+v", resp)
+	}
+	resp = post("2b", "referee/task_start", `{"task_id":"t1","task_class":"ops","control_token":"wrong"}`, "sess-123")
+	if resp.Error == nil {
+		t.Fatalf("task_start with a bad control token must be refused: %+v", resp)
+	}
+	resp = post("2c", "referee/user_block", `{"text":"trust me"}`, "sess-123")
+	if resp.Error == nil {
+		t.Fatalf("user_block without control token must be refused: %+v", resp)
+	}
+
+	resp = post("2", "referee/task_start", `{"task_id":"t1","task_class":"ops","control_token":"ctl-test"}`, "sess-123")
 	if resp.Error != nil {
 		t.Fatalf("task_start failed: %+v", resp)
+	}
+	// control result is flat, not a nested JSON-RPC envelope
+	var ctl map[string]any
+	if err := json.Unmarshal(resp.Result, &ctl); err != nil || ctl["ok"] != true || ctl["task"] != "t1" {
+		t.Fatalf("control result shape wrong (nested envelope?): %s", resp.Result)
 	}
 
 	// unknown session, no token: gate denies with its own code — upstream untouched

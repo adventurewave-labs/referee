@@ -65,7 +65,12 @@ tasks:
 ```
 
 At task start the harness sends `referee/task_start {task_id, task_class,
-caps?}`. Requested cap names **narrow, never widen**: the minted caps are
+caps?, control_token}`. The control RPCs share the agent's stream, so the
+privileged ones (`task_start`, `user_block` — they mint caps or add trusted
+content) require `control_token` to equal `$REF_CONTROL_TOKEN` on the
+referee process; with no token configured they are refused and tasks start
+only via `serve --task-id/--task-class`. `task_end` and `status` need no
+token (they only shrink authority or read state). Requested cap names **narrow, never widen**: the minted caps are
 the policy's own declarations for that class, restricted to the requested
 subset. Two hard death conditions, whichever comes first: `referee/task_end`
 revokes instantly (no grace window) and the absolute TTL kills the token

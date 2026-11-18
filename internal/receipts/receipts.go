@@ -321,6 +321,9 @@ func verifyHeads(entries []Entry, headsPath string, pub ed25519.PublicKey, mustE
 	if err := sc.Err(); err != nil {
 		return heads, last, err
 	}
+	if mustExist && len(entries) > 0 && heads == 0 {
+		return 0, 0, fmt.Errorf("receipts: heads file %s contains no signed heads — signature evidence absent", headsPath)
+	}
 	return heads, last, nil
 }
 

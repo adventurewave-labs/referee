@@ -161,20 +161,18 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 
 		// referee control plane
 		if strings.HasPrefix(req.Method, "referee/") {
-			var buf bytes.Buffer
+			// handleControl emits the complete JSON-RPC response itself:
+			// relay it as-is (wrapping it again would nest result.result)
+			var out any
 			if err := handleControl(e, sess, &req, func(v any) error {
-				b, merr := json.Marshal(v)
-				if merr != nil {
-					return merr
-				}
-				buf.Write(b)
+				out = v
 				return nil
 			}); err != nil {
 				writeJSON(w, http.StatusOK, Response{JSONRPC: "2.0", ID: req.ID,
 					Error: &RPCError{Code: CodeInvalidParams, Message: err.Error()}})
 				return
 			}
-			writeJSON(w, http.StatusOK, Response{JSONRPC: "2.0", ID: req.ID, Result: buf.Bytes()})
+			writeJSON(w, http.StatusOK, out)
 			return
 		}
 

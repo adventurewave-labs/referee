@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +21,18 @@ type TaskStartParams struct {
 	TaskClass       string   `json:"task_class"`
 	Caps            []string `json:"caps,omitempty"` // cap keys to narrow to
 	OperatorContext string   `json:"operator_context,omitempty"`
+	ControlToken    string   `json:"control_token"`
+}
+
+// controlAuthorized checks a privileged control RPC's token in constant time.
+func controlAuthorized(e *Engine, token string) error {
+	if len(e.ControlToken) == 0 {
+		return fmt.Errorf("privileged control RPCs disabled (no control token configured; start tasks with serve --task-id or set REF_CONTROL_TOKEN)")
+	}
+	if subtle.ConstantTimeCompare([]byte(token), e.ControlToken) != 1 {
+		return fmt.Errorf("control RPC refused: bad control token")
+	}
+	return nil
 }
 
 // RunStdio bridges one agent (on r) to one upstream MCP server (on upstream),
@@ -198,6 +211,9 @@ func handleControl(e *Engine, sess *Session, req *Request, send func(any) error)
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return fmt.Errorf("bad task_start params: %w", err)
 		}
+		if err := controlAuthorized(e, p.ControlToken); err != nil {
+			return err
+		}
 		if err := e.StartTask(sess, p.TaskID, p.TaskClass, p.Caps, p.OperatorContext); err != nil {
 			return err
 		}
@@ -207,10 +223,14 @@ func handleControl(e *Engine, sess *Session, req *Request, send func(any) error)
 		return okResult(map[string]any{"ok": true, "revoked": killed})
 	case "referee/user_block":
 		var p struct {
-			Text string `json:"text"`
+			Text         string `json:"text"`
+			ControlToken string `json:"control_token"`
 		}
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return fmt.Errorf("bad user_block params: %w", err)
+		}
+		if err := controlAuthorized(e, p.ControlToken); err != nil {
+			return err
 		}
 		sess.AddUser(p.Text)
 		return okResult(map[string]any{"ok": true})

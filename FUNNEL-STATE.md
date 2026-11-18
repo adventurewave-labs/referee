@@ -89,3 +89,20 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
    with a body listing PRD sections covered + §8 regressions + known
    limitations. Do NOT merge.
 5. Update this file as you go; leave `remote-out/` uncommitted (gitignored).
+
+## Gate round 2 log (2026-11-18)
+
+- Round 1 (codex reviewer): REVISE — 5 findings (control-RPC authority
+  minting; per-value gate matching; empty-heads receipt bypass; challenge
+  payload disclosure; receipt-write failures not fail-closed).
+- Fixes: control-token auth for task_start/user_block (REF_CONTROL_TOKEN,
+  constant-time compare, disabled when unset) + HTTP control result shape;
+  receipts fail-closed on append error; per-argument raw-value matching in
+  the gate (JSON map escaping/wrapping defeated reverse containment);
+  empty/truncated heads file refuses verification; challenge payloads never
+  emit raw argument text (shape-only) and secret-looking hostile excerpts
+  are withheld (HMAC ref instead).
+- Builder handoff: claude worker did round-1 compile+gate then was stopped
+  mid-round-2 (roster: builders are GLM); GLM completed the remaining
+  findings #2/#3/#4 + tests over SSH on the same lane. Reviewer stays codex.
+- CI: go 1.22 vet+build+test+bench GREEN (containment 36.8µs/op, budget 5ms).

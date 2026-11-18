@@ -301,3 +301,19 @@ func TestScopedCapsUseTheirOwnArgument(t *testing.T) {
 		t.Fatalf("to-scoped cap must authorize a matching to: %+v", d)
 	}
 }
+
+// round-2 fix: a value that is a fragment of a high-sensitivity block must
+// gate conf-high. The map-level pass wraps the value in JSON, defeating the
+// reverse containment check (block ⊇ value) in both directions; matching
+// each argument's raw value restores it (gate.go per-value union).
+func TestPartialSecretValueGatesPerValue(t *testing.T) {
+	g := testGate(policyForVerbs(policy.TrustAny, policy.ChallengeIfHigh, nil))
+	blk := labels.Block{ID: "b-frag", Source: "web", Trust: labels.TrustUntrusted,
+		Sensitivity: labels.SensHigh, IngestedAt: time.Now(), Text: "note AKIA&IOSFODNN7X end"}
+	frag := "AKIA&IOSFODNN7X" // an 8+ char fragment of the block text
+	in := Input{TaskID: "t1", Tool: "send_email", Args: map[string]any{"body": frag}}
+	d := g.Evaluate(in, token(), []labels.Block{blk})
+	if d.Action != Challenge || d.Conf != "high" {
+		t.Fatalf("partial high-block value must gate conf-high/challenge: action=%s conf=%s", d.Action, d.Conf)
+	}
+}

@@ -23,6 +23,11 @@ type Engine struct {
 	Notifier   func(challenge.Challenge) error // dispatches the redacted challenge
 	ReceiptKey []byte                          // key for block HMAC refs in challenges
 	Log        *log.Logger                     // stderr logger; never logs args or secrets
+	// ControlToken authenticates the privileged control RPCs (task_start,
+	// user_block) that mint caps or add trusted content. They share the
+	// agent's stream, so they are refused unless the operator-side harness
+	// proves itself with this token; empty disables them entirely.
+	ControlToken []byte
 }
 
 // HandleToolCall runs the §5.3 pipeline for one tools/call. It returns the
@@ -69,7 +74,13 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 		}
 	}
 
-	e.receipt(sess, params, d, string(argsJSON))
+	// no receipt, no call: a decision that cannot be recorded never forwards
+	if err := e.receipt(taskID, params, d, string(argsJSON)); err != nil {
+		if e.Log != nil {
+			e.Log.Printf("receipts: append failed, denying %s: %v", params.Name, err)
+		}
+		return DenyResult(gate.Deny, "receipt:write-failed", "the decision receipt could not be written; denying (fail closed)"), false, nil
+	}
 
 	switch d.Action {
 	case gate.Approve:
@@ -106,13 +117,15 @@ func (e *Engine) IngestResult(sess *Session, params ToolCallParams, resultRaw js
 	sess.IngestToolResult(tool, path, text)
 }
 
-func (e *Engine) receipt(sess *Session, params ToolCallParams, d gate.Decision, argsJSON string) {
+// receipt appends the decision to the receipt chain. A nil Receipts log
+// (library embedding without receipts) records nothing.
+func (e *Engine) receipt(taskID string, params ToolCallParams, d gate.Decision, argsJSON string) error {
 	if e.Receipts == nil {
-		return
+		return nil
 	}
 	axis := fmt.Sprintf("integrity=%s conf=%s", d.Integrity, d.Conf)
 	_, _, err := e.Receipts.Append(receipts.Record{
-		Task:          sess.TaskID,
+		Task:          taskID,
 		Tool:          params.Name,
 		Rule:          d.Rule,
 		Decision:      d.Action,
@@ -121,9 +134,7 @@ func (e *Engine) receipt(sess *Session, params ToolCallParams, d gate.Decision, 
 		Axis:          axis,
 		ArgsCanonical: argsJSON, // stored only as keyed HMAC
 	})
-	if err != nil && e.Log != nil {
-		e.Log.Printf("receipts: append failed: %v", err)
-	}
+	return err
 }
 
 func blocksForIDs(blocks []labels.Block, ids []string) []labels.Block {
