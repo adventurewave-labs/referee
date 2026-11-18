@@ -78,6 +78,26 @@ func decodeOnce(v string) []string {
 		}
 	}
 
+	// encoded blobs embedded in prose ("attach <base64>", "key=<hex>"):
+	// decode each separator-delimited field on its own, bounded.
+	for _, f := range embeddedFields(v) {
+		if looksBase64(f) {
+			for _, enc := range []*base64.Encoding{
+				base64.StdEncoding, base64.RawStdEncoding,
+				base64.URLEncoding, base64.RawURLEncoding,
+			} {
+				if d, err := enc.DecodeString(f); err == nil && len(d) > 0 {
+					add(string(d))
+				}
+			}
+		}
+		if looksHex(f) {
+			if d, err := hex.DecodeString(f); err == nil && len(d) > 0 {
+				add(string(d))
+			}
+		}
+	}
+
 	// JSON string escapes: if the value is a quoted JSON string, unquote it
 	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' && strings.ContainsRune(v, '\\') {
 		if u, err := strconv.Unquote(v); err == nil {
@@ -96,6 +116,39 @@ func decodeOnce(v string) []string {
 	if strings.Contains(v, `\`) {
 		if u, changed := unescapeSimple(v); changed {
 			add(u)
+		}
+	}
+	return out
+}
+
+// maxFields bounds how many embedded fields one value is split into.
+const maxFields = 32
+
+// embeddedFields splits v on whitespace and common delimiters, returning the
+// fields long enough to carry an encoded blob (and only when v actually has
+// more than one field — the whole value is decoded separately).
+func embeddedFields(v string) []string {
+	fields := strings.FieldsFunc(v, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\n', '\r', ':', ',', ';', '"', '\'', '(', ')', '[', ']', '{', '}', '<', '>':
+			return true
+		}
+		return false
+	})
+	if len(fields) < 2 {
+		return nil
+	}
+	var out []string
+	for _, f := range fields {
+		// key=value: the value side is the candidate blob
+		if i := strings.IndexByte(f, '='); i > 0 && i < len(f)-1 {
+			f = f[i+1:]
+		}
+		if len(f) >= 8 {
+			out = append(out, f)
+			if len(out) >= maxFields {
+				break
+			}
 		}
 	}
 	return out

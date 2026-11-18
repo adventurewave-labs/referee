@@ -14,9 +14,10 @@ import (
 
 // NewHTTPJudge builds a judge from policy judge config. Provider:
 //   - openai:    OpenAI-compatible /chat/completions (endpoint may point at
-//                any compatible deployment)
+//     any compatible deployment)
 //   - anthropic: Anthropic /v1/messages
 //   - mock:      scripted verdicts (tests/demo only)
+//
 // API keys travel via the environment variable named by apiKeyEnv — never in
 // argv, logs, or git.
 func NewHTTPJudge(provider, model, endpoint, apiKeyEnv string) (Judge, error) {
@@ -41,8 +42,8 @@ type HTTPJudge struct {
 func (h *HTTPJudge) Judge(ctx context.Context, req Request) (Verdict, error) {
 	system, user := BuildPrompt(req)
 	var (
-		url string
-		hdr map[string]string
+		url  string
+		hdr  map[string]string
 		body []byte
 	)
 	switch h.Provider {

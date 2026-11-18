@@ -149,9 +149,9 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				w.Header().Set("Mcp-Session-Id", hs)
 				mu.Lock()
 				if old := sess.ID; old != hs {
-					sessions[hs] = s
+					sessions[hs] = sess
 					delete(sessions, old)
-					s.ID = hs
+					sess.ID = hs
 				}
 				mu.Unlock()
 			}
@@ -201,8 +201,7 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				return
 			}
 			if !forward {
-				rb, _ := json.Marshal(result)
-				writeJSON(w, http.StatusOK, Response{JSONRPC: "2.0", ID: req.ID, Result: rb})
+				writeJSON(w, http.StatusOK, DenyResponse(req.ID, result))
 				return
 			}
 			resp, _, err := u.RoundTrip(sessID, req)

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/adventurewave-labs/referee/internal/caps"
 	"github.com/adventurewave-labs/referee/internal/labels"
@@ -39,7 +40,8 @@ type Gate struct {
 	Policy     *policy.Policy
 	Matcher    *labels.Matcher
 	Classifier *labels.Classifier
-	Probe      *probe.Probe // nil => integrity probes fail closed (tainted)
+	Probe      *probe.Probe     // nil => integrity probes fail closed (tainted)
+	Now        func() time.Time // clock for token liveness; nil => time.Now
 }
 
 // Input is one tool call to evaluate.
@@ -96,16 +98,29 @@ func (g *Gate) Evaluate(in Input, token *caps.Token, blocks []labels.Block) Deci
 	// Rule-based classifier fills the gap only when propagation was silent.
 	argHigh := g.Classifier.LooksHigh(argText)
 	callHigh := propagatedHigh || argHigh
+	callSens := labels.SensNormal
+	if callHigh {
+		callSens = labels.SensHigh
+	}
 
 	tool := g.Policy.ToolFor(in.Tool)
 	d := Decision{}
 
 	// -- Step 1: capability check -----------------------------------------
 	scopeVal := scopeValue(in.Args, firstScopeArg(token, in.Tool))
+	now := time.Now
+	if g.Now != nil {
+		now = g.Now
+	}
+	// a token handed in may have outlived its TTL or been ended since it was
+	// fetched: liveness is re-checked here, never assumed
+	if token != nil && !token.Alive(now()) {
+		token = nil
+	}
 	if token == nil {
 		return deny("cap:token-missing", "no capability token for task (token missing, expired, or task ended)")
 	}
-	if !token.Covers(in.Tool, scopeVal, callHigh) {
+	if !token.Covers(in.Tool, scopeVal, callSens) {
 		// Cap gap. May challenge ONLY if the policy opts in per tool, the
 		// approver allowlist is non-empty, and any grant is task-scoped and
 		// expires with the token (the challenge grant rides the same token).
@@ -118,7 +133,7 @@ func (g *Gate) Evaluate(in Input, token *caps.Token, blocks []labels.Block) Deci
 				Reason:   "no cap covers this call; policy opted into approver challenge for cap gaps",
 			}
 		}
-		return deny("cap:missing", fmt.Sprintf("no cap covers tool %q at sensitivity %s (cap gap; cap-gap-challenge not enabled)", in.Tool, callHigh))
+		return deny("cap:missing", fmt.Sprintf("no cap covers tool %q at sensitivity %s (cap gap; cap-gap-challenge not enabled)", in.Tool, callSens))
 	}
 
 	// -- Step 2: integrity axis -------------------------------------------

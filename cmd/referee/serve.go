@@ -113,7 +113,14 @@ func cmdServe(args []string) error {
 	dash := dashboard.New(dashboard.Deps{
 		LogPath: *logPath, HeadsPath: *headsPath, PubKey: pub, Token: *dashToken,
 		ReceiptsKey: hmacKey, Challenges: mgr,
-		Sessions: func() []dashboard.SessionInfo { return registry.Stats() },
+		Sessions: func() []dashboard.SessionInfo {
+			stats := registry.Stats()
+			out := make([]dashboard.SessionInfo, len(stats))
+			for i, st := range stats {
+				out[i] = dashboard.SessionInfo(st)
+			}
+			return out
+		},
 	})
 	dashAddrEff := *dashAddr
 	if dashAddrEff == "" && *challengeMode == "local" {
@@ -122,15 +129,25 @@ func cmdServe(args []string) error {
 	if dashAddrEff != "" {
 		mux := http.NewServeMux()
 		mux.Handle("/", dash.Handler())
-		if slack != nil {
-			mux.HandleFunc("/slack/interactive", slack.HandleInteractive(func(p challenge.InteractivePayload) error {
-				return mgr.Resolve(p.ChallengeID, p.Approver, p.Approve)
-			}))
-		}
 		go func() {
 			logger.Printf("dashboard on http://%s (token required for approvals)", dashAddrEff)
 			if err := http.ListenAndServe(dashAddrEff, mux); err != nil {
 				logger.Printf("dashboard: %v", err)
+			}
+		}()
+	}
+
+	// slack interactive endpoint: its own listener so it works whether or
+	// not the dashboard is enabled (signed requests only, see HandleInteractive)
+	if slack != nil {
+		smux := http.NewServeMux()
+		smux.HandleFunc("/slack/interactive", slack.HandleInteractive(func(p challenge.InteractivePayload) error {
+			return mgr.Resolve(p.ChallengeID, p.Approver, p.Approve)
+		}))
+		go func() {
+			logger.Printf("slack interactive endpoint on http://%s/slack/interactive", *slackHook)
+			if err := http.ListenAndServe(*slackHook, smux); err != nil {
+				logger.Printf("slack endpoint: %v", err)
 			}
 		}()
 	}

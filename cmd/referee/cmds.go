@@ -167,4 +167,3 @@ func cmdApprove(args []string) error {
 func runDemo(w *os.File) error {
 	return demo.Run(w)
 }
-

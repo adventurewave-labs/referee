@@ -35,10 +35,15 @@ func (m *Matcher) Matches(arg string, blocks []Block) []Match {
 		tl = 12
 	}
 	var variants []string
+	argTokens := map[string]bool{}
 	for _, v := range Decodings(arg) {
 		variants = append(variants, v, NormalizeForMatch(v))
+		// fuzzy tokens come from every decoded variant, so an encoded copy
+		// of a block's identifier still hits the long-token rule
+		for t := range longTokens(v, tl) {
+			argTokens[t] = true
+		}
 	}
-	argTokens := longTokens(arg, tl)
 	seen := map[string]bool{}
 	var out []Match
 	for _, b := range blocks {
@@ -81,7 +86,7 @@ func (m *Matcher) blockHit(text string, variants []string, argTokens map[string]
 	}
 	// fuzzy: any long high-entropy token from the block shows up in the
 	// argument (reworded injections that carry identifiers still match).
-	for _, t := range longTokens(text, tl) {
+	for t := range longTokens(text, tl) {
 		if argTokens[t] {
 			return true, false
 		}

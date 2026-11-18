@@ -17,18 +17,18 @@ import (
 type IntegrityVerb string
 
 const (
-	TrustAny             IntegrityVerb = "trust-any"
-	ChallengeIfTainted   IntegrityVerb = "challenge-if-tainted"
-	RequireTrusted       IntegrityVerb = "require-trusted"
+	TrustAny           IntegrityVerb = "trust-any"
+	ChallengeIfTainted IntegrityVerb = "challenge-if-tainted"
+	RequireTrusted     IntegrityVerb = "require-trusted"
 )
 
 // ConfVerb — per-tool confidentiality axis verb (§5.3).
 type ConfVerb string
 
 const (
-	SensitivityAny   ConfVerb = "sensitivity-any"
-	ChallengeIfHigh  ConfVerb = "challenge-if-high"
-	RequireNormal    ConfVerb = "require-normal"
+	SensitivityAny  ConfVerb = "sensitivity-any"
+	ChallengeIfHigh ConfVerb = "challenge-if-high"
+	RequireNormal   ConfVerb = "require-normal"
 )
 
 // Dur is a YAML-friendly time.Duration ("4h", "15m", "30s").
@@ -51,29 +51,29 @@ func (d Dur) D() time.Duration { return time.Duration(d) }
 
 // Defaults are operator-level guardrails.
 type Defaults struct {
-	TTL         Dur `yaml:"ttl"`
-	TTLCeiling  Dur `yaml:"ttl_ceiling"`
+	TTL          Dur `yaml:"ttl"`
+	TTLCeiling   Dur `yaml:"ttl_ceiling"`
 	ProbeTimeout Dur `yaml:"probe_timeout"`
 }
 
 // PathRuleYAML labels file reads under a glob (trust AND sensitivity).
 type PathRuleYAML struct {
-	Pattern     string          `yaml:"pattern"`
-	Trust       labels.Trust    `yaml:"trust"`
+	Pattern     string             `yaml:"pattern"`
+	Trust       labels.Trust       `yaml:"trust"`
 	Sensitivity labels.Sensitivity `yaml:"sensitivity"`
 }
 
 // Tool declares one tool's gate configuration.
 type Tool struct {
-	Name            string             `yaml:"name"`
-	Integrity       IntegrityVerb      `yaml:"integrity"`
-	Confidentiality ConfVerb           `yaml:"confidentiality"`
-	Approvers       []string           `yaml:"approvers"`
-	CapGapChallenge bool               `yaml:"cap_gap_challenge"`
-	ProbeConsensus  bool               `yaml:"probe_consensus"`
-	Emits           string             `yaml:"emits"`        // tool-result|web|rag|file-read
-	EmitPathArg     string             `yaml:"emit_path_arg"` // for file-read: arg carrying the path
-	SinkClass       string             `yaml:"sink_class"`    // probe cache dimension; default = tool name
+	Name            string        `yaml:"name"`
+	Integrity       IntegrityVerb `yaml:"integrity"`
+	Confidentiality ConfVerb      `yaml:"confidentiality"`
+	Approvers       []string      `yaml:"approvers"`
+	CapGapChallenge bool          `yaml:"cap_gap_challenge"`
+	ProbeConsensus  bool          `yaml:"probe_consensus"`
+	Emits           string        `yaml:"emits"`         // tool-result|web|rag|file-read
+	EmitPathArg     string        `yaml:"emit_path_arg"` // for file-read: arg carrying the path
+	SinkClass       string        `yaml:"sink_class"`    // probe cache dimension; default = tool name
 }
 
 // CapDecl is one sensitivity-bearing capability (§5.2): a cap covers calls up
@@ -108,12 +108,12 @@ type JudgeCfg struct {
 
 // File is the on-disk YAML shape.
 type File struct {
-	Version int             `yaml:"version"`
+	Version  int            `yaml:"version"`
 	Defaults Defaults       `yaml:"defaults"`
-	Paths   []PathRuleYAML  `yaml:"paths"`
-	Tools   []Tool          `yaml:"tools"`
-	Tasks   []TaskClass     `yaml:"tasks"`
-	Judges  []JudgeCfg      `yaml:"judges"`
+	Paths    []PathRuleYAML `yaml:"paths"`
+	Tools    []Tool         `yaml:"tools"`
+	Tasks    []TaskClass    `yaml:"tasks"`
+	Judges   []JudgeCfg     `yaml:"judges"`
 }
 
 // Policy is the compiled form the gate consumes.

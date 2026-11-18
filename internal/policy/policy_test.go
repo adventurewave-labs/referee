@@ -10,7 +10,7 @@ import (
 
 func sampleFile() *File {
 	return &File{
-		Version: 1,
+		Version:  1,
 		Defaults: Defaults{TTL: Dur(2 * time.Hour), TTLCeiling: Dur(4 * time.Hour), ProbeTimeout: Dur(5 * time.Second)},
 		Tools: []Tool{
 			{Name: "send_email", Integrity: ChallengeIfTainted, Confidentiality: ChallengeIfHigh, Approvers: []string{"U1"}},

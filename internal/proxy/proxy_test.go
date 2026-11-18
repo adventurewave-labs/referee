@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/adventurewave-labs/referee/internal/gate"
 	"github.com/adventurewave-labs/referee/internal/labels"
 	"github.com/adventurewave-labs/referee/internal/policy"
+	"github.com/adventurewave-labs/referee/internal/probe"
 	"github.com/adventurewave-labs/referee/internal/receipts"
 )
 
@@ -57,7 +59,7 @@ func (lc *lineCatcher) waitLine(wantID string, timeout time.Duration) (Response,
 		lc.mu.Lock()
 		for _, ln := range lc.lines {
 			var resp Response
-			if json.Unmarshal([]byte(ln), &resp) == nil && string(resp.ID) == wantID {
+			if json.Unmarshal([]byte(ln), &resp) == nil && (string(resp.ID) == wantID || string(resp.ID) == strconv.Quote(wantID)) {
 				lc.mu.Unlock()
 				return resp, true
 			}
@@ -148,8 +150,11 @@ func testEngine(t *testing.T) *Engine {
 		t.Fatalf("receipts: %v", err)
 	}
 	return &Engine{
-		Policy:     pol,
-		Gate:       &gate.Gate{Policy: pol, Matcher: labels.NewMatcher(), Classifier: labels.DefaultClassifier()},
+		Policy: pol,
+		// a mock set-probe judge: without one the gate fails closed on any
+		// call made while untrusted content sits in the shadow context
+		Gate: &gate.Gate{Policy: pol, Matcher: labels.NewMatcher(), Classifier: labels.DefaultClassifier(),
+			Probe: probe.New([]probe.Judge{&probe.MockJudge{TaintWhen: []string{"ignore previous"}}}, time.Second, time.Now)},
 		Caps:       caps.NewStore(time.Now),
 		Receipts:   rcp,
 		Challenges: challenge.NewManager(time.Second, []byte("test"), time.Now),
@@ -176,15 +181,16 @@ func (p upPipe) Close() error {
 func TestStdioPipeline(t *testing.T) {
 	eng := testEngine(t)
 
-	agentR, agentW := io.Pipe()
-	upR, upW := io.Pipe()
+	agentR, agentW := io.Pipe() // agent -> proxy
+	p2uR, p2uW := io.Pipe()     // proxy -> upstream
+	u2pR, u2pW := io.Pipe()     // upstream -> proxy
 	out := newLineCatcher()
 
-	up := &fakeUpstream{r: bufio.NewReader(upR), w: upW}
+	up := &fakeUpstream{r: bufio.NewReader(p2uR), w: u2pW}
 	go up.serve()
 
 	done := make(chan error, 1)
-	go func() { done <- RunStdio(eng, agentR, out, upPipe{r: upR, w: agentW}) }()
+	go func() { done <- RunStdio(eng, agentR, out, upPipe{r: u2pR, w: p2uW}) }()
 
 	write := func(id, method, params string) {
 		req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%q,"method":%q,"params":%s}`, id, method, params)

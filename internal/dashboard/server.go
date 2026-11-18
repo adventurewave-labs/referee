@@ -18,23 +18,23 @@ import (
 
 // Deps wires the dashboard to the running engine.
 type Deps struct {
-	LogPath      string
-	HeadsPath    string
-	PubKey       []byte // ed25519 public key for verify
-	Token        string // required for approve + full detail
-	ReceiptsKey  []byte
-	Challenges   *challenge.Manager
-	Sessions func() []SessionInfo
+	LogPath     string
+	HeadsPath   string
+	PubKey      []byte // ed25519 public key for verify
+	Token       string // required for approve + full detail
+	ReceiptsKey []byte
+	Challenges  *challenge.Manager
+	Sessions    func() []SessionInfo
 }
 
 // SessionInfo is one live session snapshot.
 type SessionInfo struct {
-	ID       string
-	TaskID   string
-	Class    string
-	Blocks   int
+	ID        string
+	TaskID    string
+	Class     string
+	Blocks    int
 	Untrusted int
-	Alive    bool
+	Alive     bool
 }
 
 // Server is the dashboard HTTP server.

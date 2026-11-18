@@ -19,13 +19,13 @@ type Classifier struct {
 // in later revisions; correctness of the shipped set is pinned by tests.
 func DefaultClassifier() *Classifier {
 	pats := []string{
-		`AKIA[0-9A-Z]{16}`,                         // AWS access key id
-		`(?i)sk-[a-z0-9_-]{20,}`,                   // OpenAI-style key
-		`ghp_[A-Za-z0-9]{30,}`,                     // GitHub PAT
-		`github_pat_[A-Za-z0-9_]{20,}`,             // GitHub fine-grained PAT
-		`xox[bpars]-[A-Za-z0-9-]{10,}`,             // Slack token
-		`-----BEGIN [A-Z ]*PRIVATE KEY-----`,       // PEM private key
-		`(?i)bearer\s+[a-z0-9._~+/=-]{20,}`,        // bearer credential
+		`AKIA[0-9A-Z]{16}`,                   // AWS access key id
+		`(?i)sk-[a-z0-9_-]{20,}`,             // OpenAI-style key
+		`ghp_[A-Za-z0-9]{30,}`,               // GitHub PAT
+		`github_pat_[A-Za-z0-9_]{20,}`,       // GitHub fine-grained PAT
+		`xox[bpars]-[A-Za-z0-9-]{10,}`,       // Slack token
+		`-----BEGIN [A-Z ]*PRIVATE KEY-----`, // PEM private key
+		`(?i)bearer\s+[a-z0-9._~+/=-]{20,}`,  // bearer credential
 		`(?i)\b(password|passwd|secret|token|api[_-]?key|private[_-]?key)\b\s*[=:]\s*["']?[^\s"']{8,}`,
 		`(?i)\b(AWS_SECRET_ACCESS_KEY|GITHUB_TOKEN|SLACK_BOT_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY)\b`,
 	}
@@ -47,9 +47,11 @@ func (c *Classifier) LooksHigh(s string) bool {
 	return highEntropyRun(s)
 }
 
-// highEntropyRun finds an alphanumeric/credential-alphabet run of >= 24
-// chars whose Shannon entropy per char exceeds 3.5 bits — random-looking
-// material.
+// highEntropyRun finds a credential-alphabet run of >= 24 chars that mixes
+// letters and digits (>= 2 digits) and whose Shannon entropy exceeds 3.5
+// bits per char — random-looking material. The letter+digit requirement
+// keeps ordinary prose, hostnames and paths ("//registry.internal/preview")
+// from reading as credentials; '.' and '~' end a run for the same reason.
 func highEntropyRun(s string) bool {
 	run := make([]rune, 0, 64)
 	scan := func() bool {
@@ -57,15 +59,25 @@ func highEntropyRun(s string) bool {
 			return false
 		}
 		freq := map[rune]int{}
+		letters, digits := 0, 0
 		for _, r := range run {
 			freq[r]++
+			switch {
+			case r >= '0' && r <= '9':
+				digits++
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+				letters++
+			}
+		}
+		if letters == 0 || digits < 2 {
+			return false
 		}
 		h := 0.0
 		for _, n := range freq {
 			p := float64(n) / float64(len(run))
-			h += -p * log2(p)
+			h += -p * math.Log2(p)
 		}
-		return h/float64(len(run)) > 3.5
+		return h > 3.5 // h is already bits per char
 	}
 	for _, r := range s {
 		if isCredRune(r) {
@@ -85,10 +97,5 @@ func isCredRune(r rune) bool {
 	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 		return true
 	}
-	return strings.ContainsRune("+/=_-.~", r)
-}
-
-func log2(x float64) float64 {
-	const ln2 = 0.6931471805599453
-	return math.Log(x) / ln2
+	return strings.ContainsRune("+/=_-", r)
 }

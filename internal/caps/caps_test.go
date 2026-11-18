@@ -40,7 +40,8 @@ func TestClampToCeiling(t *testing.T) {
 	if !tok.Clamped {
 		t.Errorf("ttl above ceiling must be recorded as clamped")
 	}
-	if !tok.Alive(base.Add(4*time.Hour)) || tok.Alive(base.Add(4*time.Hour+time.Second)) {
+	// expiry is half-open: alive strictly before ExpiresAt, dead at it (fail closed)
+	if !tok.Alive(base.Add(4*time.Hour-time.Second)) || tok.Alive(base.Add(4*time.Hour)) {
 		t.Errorf("clamped ttl must be the ceiling exactly")
 	}
 }
@@ -53,7 +54,7 @@ func TestEndRevokesImmediately(t *testing.T) {
 	if !s.End("t1") {
 		t.Errorf("end of a live token must report true")
 	}
-	if !s.End("t1") {
+	if s.End("t1") {
 		t.Errorf("second end must report false (idempotent)")
 	}
 	if tok := s.Get("t1"); tok != nil {

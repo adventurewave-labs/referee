@@ -75,6 +75,17 @@ func DenyResult(decision string, rule, reason string) ToolCallResult {
 	}
 }
 
+// DenyResponse wraps a gate denial as a JSON-RPC error carrying Referee's
+// own code, so agents and clients can tell a policy denial apart from a tool
+// failure. The denial text (no argument values) is the message.
+func DenyResponse(id json.RawMessage, r ToolCallResult) Response {
+	msg := "referee: denied by policy gate"
+	if len(r.Content) > 0 {
+		msg = r.Content[0].Text
+	}
+	return Response{JSONRPC: "2.0", ID: id, Error: &RPCError{Code: CodeGateDenied, Message: msg}}
+}
+
 // TextFromResult concatenates the text content blocks of a tools/call
 // result for shadow-context ingestion.
 func TextFromResult(raw json.RawMessage) string {

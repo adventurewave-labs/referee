@@ -101,8 +101,7 @@ func RunStdio(e *Engine, r io.Reader, w io.Writer, upstream io.ReadWriter) error
 				continue
 			}
 			if !forward {
-				rb, _ := json.Marshal(result)
-				if err := sendAgent(Response{JSONRPC: "2.0", ID: req.ID, Result: rb}); err != nil {
+				if err := sendAgent(DenyResponse(req.ID, result)); err != nil {
 					return err
 				}
 				continue

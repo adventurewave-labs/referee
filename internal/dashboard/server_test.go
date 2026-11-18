@@ -37,7 +37,10 @@ func TestDashboardEndpoints(t *testing.T) {
 	}
 
 	// sessions API
-	resp2, _ := http.Get(srv.URL + "/api/sessions")
+	resp2, err := http.Get(srv.URL + "/api/sessions")
+	if err != nil {
+		t.Fatalf("sessions: %v", err)
+	}
 	defer resp2.Body.Close()
 	var sessions []SessionInfo
 	json.NewDecoder(resp2.Body).Decode(&sessions)
@@ -48,7 +51,10 @@ func TestDashboardEndpoints(t *testing.T) {
 	// approvals require the bearer token
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/challenge/ch-000001/resolve",
 		strings.NewReader(`{"approver":"U1","approve":true}`))
-	resp3, _ := http.DefaultClient.Do(req)
+	resp3, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
 	defer resp3.Body.Close()
 	if resp3.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("approve without token must be 401, got %d", resp3.StatusCode)
@@ -58,7 +64,10 @@ func TestDashboardEndpoints(t *testing.T) {
 	req2, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/challenge/ch-999999/resolve",
 		strings.NewReader(`{"approver":"U1","approve":true}`))
 	req2.Header.Set("Authorization", "Bearer tok")
-	resp4, _ := http.DefaultClient.Do(req2)
+	resp4, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
 	defer resp4.Body.Close()
 	if resp4.StatusCode != http.StatusForbidden {
 		t.Fatalf("unknown challenge must be 403, got %d", resp4.StatusCode)

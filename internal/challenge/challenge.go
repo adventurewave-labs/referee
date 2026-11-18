@@ -35,10 +35,10 @@ type BlockRef struct {
 
 // Redacted is the full challenge payload — safe for Slack by construction.
 type Redacted struct {
-	Tool            string       `json:"tool"`
+	Tool            string        `json:"tool"`
 	Args            []RedactedArg `json:"args"`
-	Blocks          []BlockRef   `json:"blocks"`
-	HostileExcerpts []string     `json:"hostile_excerpts"` // attacker text, clearly marked
+	Blocks          []BlockRef    `json:"blocks"`
+	HostileExcerpts []string      `json:"hostile_excerpts"` // attacker text, clearly marked
 }
 
 // Challenge is a pending human decision.
@@ -62,8 +62,8 @@ type Result struct {
 
 // Manager tracks pending challenges with timeout-default-deny.
 type Manager struct {
-	timeout   time.Duration
-	now       func() time.Time
+	timeout    time.Duration
+	now        func() time.Time
 	receiptKey []byte // for block HMAC refs
 
 	mu      sync.Mutex

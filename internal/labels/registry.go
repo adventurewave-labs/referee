@@ -10,12 +10,12 @@ import (
 type SourceKind string
 
 const (
-	KindOperator   SourceKind = "operator"   // trusted / normal
-	KindUser       SourceKind = "user"       // semi-trusted / normal (configurable)
+	KindOperator   SourceKind = "operator"    // trusted / normal
+	KindUser       SourceKind = "user"        // semi-trusted / normal (configurable)
 	KindToolResult SourceKind = "tool-result" // untrusted / normal
-	KindWeb        SourceKind = "web"        // untrusted / normal
-	KindRAG        SourceKind = "rag"        // untrusted / normal
-	KindFile       SourceKind = "file-read"  // trust AND sensitivity by path policy
+	KindWeb        SourceKind = "web"         // untrusted / normal
+	KindRAG        SourceKind = "rag"         // untrusted / normal
+	KindFile       SourceKind = "file-read"   // trust AND sensitivity by path policy
 )
 
 // PathRule assigns labels to file reads under a glob pattern. Secrets dirs
@@ -99,9 +99,11 @@ func (r *Registry) ForPath(path string) (Trust, Sensitivity) {
 }
 
 // GlobMatch reports whether s matches a shell-style pattern where
-//   ** matches any sequence including path separators,
-//   *  matches any sequence except path separators,
-//   ?  matches any single character.
+//
+//	** matches any sequence including path separators,
+//	*  matches any sequence except path separators,
+//	?  matches any single character.
+//
 // It lives here (not caps) because both path policy and capability scopes
 // share the exact same semantics.
 func GlobMatch(pattern, s string) bool {

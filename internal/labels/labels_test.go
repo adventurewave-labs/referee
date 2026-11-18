@@ -48,7 +48,7 @@ func TestSecretEncodingsGateHigh(t *testing.T) {
 func TestIndependentAxisPropagation(t *testing.T) {
 	m := NewMatcher()
 
-	cred := block("b-cred", "token: ghp_" + strings.Repeat("a", 36), TrustTrusted, SensHigh)
+	cred := block("b-cred", "token: ghp_"+strings.Repeat("a", 36), TrustTrusted, SensHigh)
 	page := block("b-web", "the release checklist says deploy at noon sharp", TrustUntrusted, SensNormal)
 
 	got := m.Matches("send token: ghp_"+strings.Repeat("a", 36), []Block{cred})
@@ -139,6 +139,8 @@ func TestClassifierLooksHigh(t *testing.T) {
 	normal := []string{
 		"deploy the preview for PR 42",
 		"hello world this is a normal sentence about testing",
+		"https://registry.internal/preview",
+		"/home/op/projects/release-checklist-for-the-team",
 		"",
 	}
 	for _, s := range normal {
