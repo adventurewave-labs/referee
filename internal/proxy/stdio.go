@@ -119,6 +119,17 @@ func RunStdioSession(e *Engine, sess *Session, r io.Reader, w io.Writer, upstrea
 				}
 				continue
 			}
+			// forward exactly what the gate evaluated: re-serialize the parsed
+			// params so duplicate/aliased keys that a lenient-vs-strict parser
+			// differential could exploit never reach upstream (round-4)
+			canonical, merr := json.Marshal(params)
+			if merr != nil {
+				if err := respondErr(req.ID, CodeInternalError, "bad tools/call params"); err != nil {
+					return err
+				}
+				continue
+			}
+			req.Params = canonical
 			result, forward, err := e.HandleToolCall(sess, params)
 			if err != nil {
 				if err := respondErr(req.ID, CodeInternalError, err.Error()); err != nil {

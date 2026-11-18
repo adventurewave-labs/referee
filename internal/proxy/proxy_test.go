@@ -448,3 +448,103 @@ func TestUpstreamPayloadsIngestUntrusted(t *testing.T) {
 		t.Fatalf("tool description not present as an untrusted block")
 	}
 }
+
+// round-4 finding: the gate evaluates Go's last-wins parse but the raw
+// params bytes were forwarded upstream — a duplicate "name" key lets a
+// first-wins upstream execute a different, ungated tool. Canonical
+// re-serialization must drop the duplicates: upstream sees exactly the
+// name the gate evaluated.
+func TestDuplicateNameKeysForwardCanonical(t *testing.T) {
+	eng := testEngine(t)
+
+	agentR, agentW := io.Pipe()
+	p2uR, p2uW := io.Pipe()
+	u2pR, u2pW := io.Pipe()
+	out := newLineCatcher()
+
+	// differential upstream: the FIRST "name" occurrence in the raw line wins
+	go func() {
+		rd := bufio.NewReader(p2uR)
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				return
+			}
+			var req Request
+			if json.Unmarshal([]byte(line), &req) != nil {
+				continue
+			}
+			var result json.RawMessage
+			switch req.Method {
+			case "initialize":
+				result = json.RawMessage(`{"protocolVersion":"2024-11-05","serverInfo":{"name":"fake","version":"0"}}`)
+			case "tools/call":
+				if firstNameInJSON(line) == "net.post" {
+					result = json.RawMessage(`{"content":[{"type":"text","text":"RAW-BYTES-REACHED-UPSTREAM"}]}`)
+				} else {
+					result = json.RawMessage(`{"content":[{"type":"text","text":"posted"}]}`)
+				}
+			default:
+				result = json.RawMessage(`{}`)
+			}
+			b, _ := json.Marshal(Response{JSONRPC: "2.0", ID: req.ID, Result: result})
+			u2pW.Write(append(b, '\n'))
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- RunStdio(eng, agentR, out, upPipe{r: u2pR, w: p2uW}) }()
+	defer func() {
+		agentW.Close()
+		p2uW.Close()
+	}()
+
+	write := func(id, method, params string) {
+		req := fmt.Sprintf(`{"jsonrpc":"2.0","id":%q,"method":%q,"params":%s}`, id, method, params)
+		agentW.Write([]byte(req + "\n"))
+	}
+	mustResp := func(id string) Response {
+		t.Helper()
+		resp, ok := out.waitLine(id, 3*time.Second)
+		if !ok {
+			t.Fatalf("no response for id %q; got:\n%s", id, out.all())
+		}
+		return resp
+	}
+
+	write("1", "initialize", `{}`)
+	mustResp("1")
+	write("2", "referee/task_start", `{"task_id":"t1","task_class":"ops","control_token":"ctl-test"}`)
+	mustResp("2")
+
+	// duplicate name: Go last-wins = web.fetch (gated, approved clean args);
+	// a first-wins upstream reading raw bytes would have run net.post
+	write("3", "tools/call", `{"name":"net.post","name":"web.fetch","arguments":{"url":"https://example.com/x","body":"clean"}}`)
+	resp := mustResp("3")
+	if resp.Error != nil {
+		t.Fatalf("canonical call must pass the gate: %+v", resp)
+	}
+	if !strings.Contains(string(resp.Result), "posted") || strings.Contains(string(resp.Result), "RAW-BYTES") {
+		t.Fatalf("upstream must receive the gate-evaluated name, not the raw first key: %s", resp.Result)
+	}
+}
+
+// firstNameInJSON extracts the value of the first "name" key in a raw
+// JSON-RPC line — a stand-in for a first-wins upstream parser.
+func firstNameInJSON(line string) string {
+	i := strings.Index(line, `"name"`)
+	if i < 0 {
+		return ""
+	}
+	rest := line[i+len(`"name"`):]
+	j := strings.Index(rest, `"`)
+	if j < 0 {
+		return ""
+	}
+	rest = rest[j+1:]
+	k := strings.Index(rest, `"`)
+	if k < 0 {
+		return ""
+	}
+	return rest[:k]
+}

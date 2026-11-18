@@ -200,6 +200,15 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 					Error: &RPCError{Code: CodeInvalidParams, Message: "bad tools/call params"}})
 				return
 			}
+			// forward exactly what the gate evaluated: canonical re-serialization
+			// defeats duplicate-key parser differentials (round-4)
+			canonical, merr := json.Marshal(params)
+			if merr != nil {
+				writeJSON(w, http.StatusOK, Response{JSONRPC: "2.0", ID: req.ID,
+					Error: &RPCError{Code: CodeInternalError, Message: "bad tools/call params"}})
+				return
+			}
+			req.Params = canonical
 			result, forward, err := e.HandleToolCall(sess, params)
 			if err != nil {
 				writeJSON(w, http.StatusOK, Response{JSONRPC: "2.0", ID: req.ID,

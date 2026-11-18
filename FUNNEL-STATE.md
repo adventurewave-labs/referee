@@ -139,3 +139,17 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
   5. .gitignore mangled line (literal \n) rewritten with real newlines.
 - New regression: TestLoadPubKeyRoundTrip (serve's exported file loads).
 - CI: green (vet/build/test/bench).
+
+## Gate round 5 log (2026-11-18)
+
+- Round 4 (claude reviewer): REVISE — blocking differential-parse bypass:
+  tools/call params were gated from the Go-parsed struct but forwarded
+  upstream as raw bytes, so a duplicate/aliased "name"/"arguments" key
+  could make a lenient upstream execute an ungated call.
+- Fix: both transports now forward the canonical re-serialization of the
+  parsed params (req.Params = json.Marshal(params)) — upstream receives
+  exactly what the gate evaluated; duplicates cannot survive.
+- Regression: TestDuplicateNameKeysForwardCanonical — e2e stdio test with
+  a FIRST-wins differential upstream; with the fix the upstream receives
+  the gate-evaluated name, never the raw first key.
+- CI: green (vet/build/test/bench, containment 41µs/op).
