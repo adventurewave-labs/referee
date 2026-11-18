@@ -145,14 +145,27 @@ func mustJSON(v any) []byte {
 	return b
 }
 
-// MockJudge returns deterministic verdicts for tests and the self-contained
-// demo: clean unless the argument contains a marker substring (casefold).
+// MockJudge returns deterministic verdicts for tests, the demo, and the
+// tuning harness. Two marker sets:
+//   - TaintWhen: taint when the ARGUMENT contains the marker (casefold) —
+//     models a judge keyed on argument content;
+//   - BlockTaintWhen: taint when any UNTRUSTED BLOCK in the set contains the
+//     marker — models a judge that spots the injected instruction in the
+//     set (the set-based question's happy path).
 type MockJudge struct {
-	// TaintWhen marks substrings that force a tainted verdict.
-	TaintWhen []string
+	TaintWhen      []string
+	BlockTaintWhen []string
 }
 
 func (m *MockJudge) Judge(_ context.Context, req Request) (Verdict, error) {
+	for _, t := range m.BlockTaintWhen {
+		tl := strings.ToLower(t)
+		for _, b := range req.Untrusted {
+			if strings.Contains(strings.ToLower(b.Text), tl) {
+				return Verdict{Verdict: Tainted, Confidence: 0.95}, nil
+			}
+		}
+	}
 	low := strings.ToLower(req.Argument)
 	for _, t := range m.TaintWhen {
 		if strings.Contains(low, strings.ToLower(t)) {
