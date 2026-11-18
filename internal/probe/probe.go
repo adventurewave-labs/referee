@@ -140,8 +140,13 @@ func (p *Probe) consensus(ctx context.Context, argument string, untrusted, trust
 	return Verdict{Verdict: Clean, Confidence: avgConfidence(outs)}
 }
 
+// failClosed maps a judge result to a verdict: errors and anything other
+// than an exact, in-range clean/tainted verdict are tainted.
 func failClosed(v Verdict, err error) Verdict {
 	if err != nil {
+		return Verdict{Verdict: Tainted, Confidence: 0}
+	}
+	if (v.Verdict != Clean && v.Verdict != Tainted) || v.Confidence < 0 || v.Confidence > 1 {
 		return Verdict{Verdict: Tainted, Confidence: 0}
 	}
 	return v
@@ -216,21 +221,32 @@ func ParseVerdict(raw string) (Verdict, error) {
 	raw = strings.TrimPrefix(raw, "```")
 	raw = strings.TrimSuffix(raw, "```")
 	raw = strings.TrimSpace(raw)
-	var v Verdict
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+	// both fields are required: a missing confidence must not decode as 0
+	// and pass, and unknown fields are a schema violation
+	var w struct {
+		Verdict    *string  `json:"verdict"`
+		Confidence *float64 `json:"confidence"`
+	}
+	decode := func(s string) error {
+		dec := json.NewDecoder(strings.NewReader(s))
+		dec.DisallowUnknownFields()
+		return dec.Decode(&w)
+	}
+	if err := decode(raw); err != nil {
 		// tolerate leading prose before the JSON object
-		if i := strings.Index(raw, "{"); i >= 0 {
-			if j := strings.LastIndex(raw, "}"); j > i {
-				if err2 := json.Unmarshal([]byte(raw[i:j+1]), &v); err2 != nil {
-					return Verdict{}, fmt.Errorf("probe: verdict not schema-strict: %w", err2)
-				}
-			} else {
-				return Verdict{}, fmt.Errorf("probe: verdict not schema-strict: %w", err)
-			}
-		} else {
+		i, j := strings.Index(raw, "{"), strings.LastIndex(raw, "}")
+		if i < 0 || j <= i {
 			return Verdict{}, fmt.Errorf("probe: verdict not schema-strict: %w", err)
 		}
+		w.Verdict, w.Confidence = nil, nil
+		if err2 := decode(raw[i : j+1]); err2 != nil {
+			return Verdict{}, fmt.Errorf("probe: verdict not schema-strict: %w", err2)
+		}
 	}
+	if w.Verdict == nil || w.Confidence == nil {
+		return Verdict{}, fmt.Errorf("probe: verdict missing required field (verdict and confidence)")
+	}
+	v := Verdict{Verdict: *w.Verdict, Confidence: *w.Confidence}
 	switch strings.ToLower(strings.TrimSpace(v.Verdict)) {
 	case Tainted:
 		v.Verdict = Tainted

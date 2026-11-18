@@ -86,3 +86,12 @@ func TestParseInteractiveDeny(t *testing.T) {
 		t.Fatalf("payload without actions must error")
 	}
 }
+
+// an empty signing secret is a publicly computable key: never accepted.
+func TestEmptySigningSecretRejected(t *testing.T) {
+	body := "payload={}"
+	ts, sig := sign(t, "", body, time.Now().Unix())
+	if err := VerifySignature("", ts, body, sig); err == nil {
+		t.Fatalf("a signature made with an empty secret must be rejected")
+	}
+}

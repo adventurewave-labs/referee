@@ -91,7 +91,11 @@ func cmdServe(args []string) error {
 	var slack *challenge.SlackNotifier
 	switch *challengeMode {
 	case "slack":
-		slack = challenge.NewSlack(os.Getenv("REF_SLACK_BOT_TOKEN"), os.Getenv("REF_SLACK_SIGNING_SECRET"), *slackChannel)
+		botToken, signSecret := os.Getenv("REF_SLACK_BOT_TOKEN"), os.Getenv("REF_SLACK_SIGNING_SECRET")
+		if botToken == "" || signSecret == "" || *slackChannel == "" {
+			return fmt.Errorf("serve: slack mode needs REF_SLACK_BOT_TOKEN, REF_SLACK_SIGNING_SECRET and --slack-channel")
+		}
+		slack = challenge.NewSlack(botToken, signSecret, *slackChannel)
 		eng.Notifier = slack.Notify
 	case "local":
 		eng.Notifier = func(c challenge.Challenge) error {
@@ -188,7 +192,7 @@ func serveStdio(eng *proxy.Engine, registry *proxy.Registry, upstreamCmd, taskID
 	}
 	defer eng.EndTask(sess) // immediate revocation on process end (§5.2)
 	logger.Printf("stdio proxy: agent=stdin upstream=%q", upstreamCmd)
-	return proxy.RunStdio(eng, os.Stdin, os.Stdout, rwc)
+	return proxy.RunStdioSession(eng, sess, os.Stdin, os.Stdout, rwc)
 }
 
 func randomToken() string {

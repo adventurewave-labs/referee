@@ -75,6 +75,12 @@ func DenyResult(decision string, rule, reason string) ToolCallResult {
 	}
 }
 
+// IsNotification reports whether method is an MCP notification — the only
+// messages allowed to omit an id and bypass the request/response path.
+func IsNotification(method string) bool {
+	return strings.HasPrefix(method, "notifications/")
+}
+
 // DenyResponse wraps a gate denial as a JSON-RPC error carrying Referee's
 // own code, so agents and clients can tell a policy denial apart from a tool
 // failure. The denial text (no argument values) is the message.

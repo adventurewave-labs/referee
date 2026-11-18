@@ -3,6 +3,7 @@ package receipts
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -121,5 +122,64 @@ func TestSearch(t *testing.T) {
 	got, _ = Search(logPath, "", "", "", "auto")
 	if len(got) != 1 {
 		t.Fatalf("rule substring search failed")
+	}
+}
+
+// rewriting the log with recomputed hashes keeps the unkeyed chain valid but
+// conflicts with the signed heads: reopen and verify must both refuse.
+func TestRewriteWithRecomputedHashesRefused(t *testing.T) {
+	logPath, headsPath := tempLog(t)
+	priv := newSigningKey(t)
+	pub := priv.Public().(ed25519.PublicKey)
+	l, err := Open(logPath, headsPath, []byte("k"), priv, 2)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, _, err := l.Append(Record{Task: "t", Tool: "x", Rule: "r", Decision: "deny", ArgsCanonical: "{}"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	entries, err := ReadAll(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := genesisHash
+	var out []byte
+	for i := range entries {
+		if i == 0 {
+			entries[i].Decision = "approve"
+		}
+		entries[i].PrevHash = prev
+		entries[i].Hash = entries[i].computeHash()
+		prev = entries[i].Hash
+		b, _ := json.Marshal(entries[i])
+		out = append(out, append(b, '\n')...)
+	}
+	os.WriteFile(logPath, out, 0o600)
+
+	if _, err := Open(logPath, headsPath, []byte("k"), priv, 2); err == nil {
+		t.Fatalf("reopen must refuse a log that conflicts with its signed heads")
+	}
+	if _, _, err := Verify(logPath, headsPath, pub); err == nil {
+		t.Fatalf("verify must refuse a log that conflicts with its signed heads")
+	}
+}
+
+// deleting the heads file must not verify as success, and a reopen must
+// notice that more than a batch of entries has no signed head.
+func TestMissingHeadsRefused(t *testing.T) {
+	logPath, headsPath := tempLog(t)
+	priv := newSigningKey(t)
+	l, _ := Open(logPath, headsPath, []byte("k"), priv, 2)
+	for i := 0; i < 4; i++ {
+		l.Append(Record{Task: "t", Tool: "x", Rule: "r", Decision: "deny", ArgsCanonical: "{}"})
+	}
+	os.Remove(headsPath)
+	if _, _, err := Verify(logPath, headsPath, priv.Public().(ed25519.PublicKey)); err == nil {
+		t.Fatalf("verify with a deleted heads file must fail")
+	}
+	if _, err := Open(logPath, headsPath, []byte("k"), priv, 2); err == nil {
+		t.Fatalf("reopen with heads missing for a full batch must fail")
 	}
 }

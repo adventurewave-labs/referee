@@ -188,6 +188,11 @@ func TestRegistryPathPolicy(t *testing.T) {
 	if tu != TrustUntrusted || sh != SensNormal {
 		t.Errorf("work path must be untrusted/normal, got %s/%s", tu, sh)
 	}
+	// ".." aliases are cleaned before matching: this is the secrets file
+	tu, sh = r.ForPath("/home/op/work/../.secrets/aws_key")
+	if sh != SensHigh {
+		t.Errorf("dot-dot alias into the secrets dir must label high, got %s", sh)
+	}
 	tu, sh = r.ForPath("/tmp/anything")
 	if tu != TrustUntrusted || sh != SensNormal {
 		t.Errorf("default file path must be untrusted/normal, got %s/%s", tu, sh)

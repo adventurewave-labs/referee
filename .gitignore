@@ -3,6 +3,8 @@ referee-receipts*.jsonl
 referee-heads*.jsonl
 *.seed
 *.key
+.args-hmac-key
+*hmac-key*
 remote-out/
 /referee
 /dist/

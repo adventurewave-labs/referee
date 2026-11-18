@@ -107,7 +107,6 @@ func (g *Gate) Evaluate(in Input, token *caps.Token, blocks []labels.Block) Deci
 	d := Decision{}
 
 	// -- Step 1: capability check -----------------------------------------
-	scopeVal := scopeValue(in.Args, firstScopeArg(token, in.Tool))
 	now := time.Now
 	if g.Now != nil {
 		now = g.Now
@@ -120,20 +119,16 @@ func (g *Gate) Evaluate(in Input, token *caps.Token, blocks []labels.Block) Deci
 	if token == nil {
 		return deny("cap:token-missing", "no capability token for task (token missing, expired, or task ended)")
 	}
-	if !token.Covers(in.Tool, scopeVal, callSens) {
-		// Cap gap. May challenge ONLY if the policy opts in per tool, the
-		// approver allowlist is non-empty, and any grant is task-scoped and
+	capGap := !token.CoversCall(in.Tool, func(arg string) string { return scopeValue(in.Args, arg) }, callSens)
+	if capGap {
+		// Cap gap. May challenge ONLY if the policy opts in per tool and the
+		// approver allowlist is non-empty; any grant is task-scoped and
 		// expires with the token (the challenge grant rides the same token).
-		t := tool
-		if t.CapGapChallenge && len(t.Approvers) > 0 {
-			return Decision{
-				Action: Challenge, Rule: "cap-gap-challenge",
-				Integrity: "unchecked", Conf: axisStatus(callHigh),
-				BlockIDs: ids,
-				Reason:   "no cap covers this call; policy opted into approver challenge for cap gaps",
-			}
+		// The opt-in never skips the axes: integrity and confidentiality are
+		// still evaluated below and a deny there wins over the challenge.
+		if !(tool.CapGapChallenge && len(tool.Approvers) > 0) {
+			return deny("cap:missing", fmt.Sprintf("no cap covers tool %q at sensitivity %s (cap gap; cap-gap-challenge not enabled)", in.Tool, callSens))
 		}
-		return deny("cap:missing", fmt.Sprintf("no cap covers tool %q at sensitivity %s (cap gap; cap-gap-challenge not enabled)", in.Tool, callSens))
 	}
 
 	// -- Step 2: integrity axis -------------------------------------------
@@ -148,7 +143,7 @@ func (g *Gate) Evaluate(in Input, token *caps.Token, blocks []labels.Block) Deci
 			tainted = true // no judge configured: fail closed
 		} else {
 			v := g.Probe.Check(nil, argText, untrustedBlocks, trustedBlocks, tool.SinkClass)
-			tainted = v.Verdict == probe.Tainted
+			tainted = v.Verdict != probe.Clean // anything but an explicit clean is taint
 		}
 	}
 	switch {
@@ -208,6 +203,21 @@ func (g *Gate) Evaluate(in Input, token *caps.Token, blocks []labels.Block) Deci
 		d.Rule = d.Rule + "+" + cRule // both axes deny: record both clauses
 	}
 
+	// Opted-in cap gap: the call goes to a human unless an axis denies.
+	if capGap {
+		switch d.Action {
+		case Approve:
+			d.Action, d.Rule = Challenge, "cap-gap-challenge"
+			d.Reason = "no cap covers this call; policy opted into approver challenge for cap gaps"
+		case Challenge:
+			d.Rule = "cap-gap-challenge+" + d.Rule
+			d.Reason = "no cap covers this call (cap-gap challenge opted in); " + d.Reason
+		}
+		d.BlockIDs = ids
+		sort.Strings(d.BlockIDs)
+		return d
+	}
+
 	// -- Step 4: clean axes auto-approve -----------------------------------
 	if d.Action == Approve {
 		d.Action, d.Rule = Approve, "auto:clean("+d.Rule+","+cRule+")"
@@ -246,21 +256,6 @@ func confReason(action string, high bool) string {
 	}
 	if action == Challenge {
 		return "high-sensitivity content movement; sending to allowlisted approver"
-	}
-	return ""
-}
-
-// firstScopeArg finds the scope argument value for a token's matching cap —
-// used to re-derive which argument a capability pattern applies to. If no
-// cap declares a scope arg for this tool, "" is used (tool-level matching).
-func firstScopeArg(token *caps.Token, tool string) string {
-	if token == nil {
-		return ""
-	}
-	for _, c := range token.Caps {
-		if c.Tool == tool && c.ScopeArg != "" {
-			return c.ScopeArg
-		}
 	}
 	return ""
 }

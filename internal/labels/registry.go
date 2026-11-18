@@ -86,8 +86,11 @@ func (r *Registry) ForKind(kind SourceKind) (Trust, Sensitivity) {
 func (r *Registry) ForPath(path string) (Trust, Sensitivity) {
 	best := -1
 	trust, sens := r.FileDefaultTrust, r.FileDefaultSens
+	// lexically clean first: "/work/../.secrets/key" must label as the
+	// secrets rule, not the work rule (symlinks are not resolved here)
+	clean := filepath.ToSlash(filepath.Clean(path))
 	for i, rule := range r.PathRules {
-		if !GlobMatch(rule.Pattern, filepath.ToSlash(path)) {
+		if !GlobMatch(rule.Pattern, clean) {
 			continue
 		}
 		if best == -1 || len(rule.Pattern) > len(r.PathRules[best].Pattern) {

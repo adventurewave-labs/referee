@@ -1,6 +1,7 @@
 package challenge
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,8 @@ func TestAllowlistAndSingleUse(t *testing.T) {
 			return
 		}
 		if !res.Approved || res.Approver != "U-ALLOWED" {
-			done <- err // sentinel: res wrong
+			done <- fmt.Errorf("approval not propagated: approved=%v approver=%q", res.Approved, res.Approver)
+			return
 		}
 		close(done)
 	}()
@@ -165,3 +167,18 @@ var errNotify = &mockErr{"slack down"}
 type mockErr struct{ s string }
 
 func (e *mockErr) Error() string { return e.s }
+
+// a labeled-high value that does not LOOK like a credential is still masked:
+// redaction follows the label, not just the shape.
+func TestRedactionFollowsHighLabel(t *testing.T) {
+	const pass = "correct horse battery staple"
+	args := map[string]any{"body": "the vault phrase is " + pass}
+	blocks := []labels.Block{
+		{ID: "b-pass", Source: "file:/home/op/.secrets/phrase", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: pass},
+	}
+	red := Redact("send_email", args, blocks, labels.DefaultClassifier(), []byte("k"))
+	dump := marshalForTest(red)
+	if strings.Contains(dump, "horse") {
+		t.Fatalf("labeled-high value leaked into the challenge payload: %s", dump)
+	}
+}

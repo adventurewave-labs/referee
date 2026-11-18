@@ -27,7 +27,12 @@ type TaskStartParams struct {
 // newline-delimited JSON (the MCP stdio transport). One process == one
 // session; the upstream process is spawned and owned by the caller.
 func RunStdio(e *Engine, r io.Reader, w io.Writer, upstream io.ReadWriter) error {
-	sess := NewSession("stdio", e.Policy.Registry)
+	return RunStdioSession(e, NewSession("stdio", e.Policy.Registry), r, w, upstream)
+}
+
+// RunStdioSession is RunStdio on a caller-owned session, so a task started
+// before the bridge runs (serve --task-id) binds to the session the calls use.
+func RunStdioSession(e *Engine, sess *Session, r io.Reader, w io.Writer, upstream io.ReadWriter) error {
 
 	agentIn := bufio.NewScanner(r)
 	agentIn.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -73,7 +78,15 @@ func RunStdio(e *Engine, r io.Reader, w io.Writer, upstream io.ReadWriter) error
 		}
 
 		// -- notifications (no id): forward verbatim, no response expected --
+		// Only MCP notifications/* may ride the id-less path: an id-less
+		// tools/call (or any other request) would reach upstream ungated.
 		if len(req.ID) == 0 {
+			if !IsNotification(req.Method) {
+				if e.Log != nil {
+					e.Log.Printf("dropped id-less %q (only notifications/* forward without an id)", req.Method)
+				}
+				continue
+			}
 			line, err := json.Marshal(req)
 			if err != nil {
 				return err

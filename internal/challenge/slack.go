@@ -189,6 +189,10 @@ func ParseInteractive(payload string) (InteractivePayload, error) {
 // `v0:<timestamp>:<body>` HMAC-SHA256 with the signing secret; the timestamp
 // must be fresh within ±5 minutes. POST-only is enforced by HandleInteractive.
 func VerifySignature(signSecret, timestamp, body, signature string) error {
+	// an empty secret is a publicly computable HMAC key: never authenticate
+	if signSecret == "" {
+		return fmt.Errorf("slack: no signing secret configured")
+	}
 	ts, err := strconv.ParseInt(timestamp, 10, 64)
 	if err != nil {
 		return fmt.Errorf("slack: bad timestamp")

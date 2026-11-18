@@ -180,6 +180,13 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 
 		// notifications (no id): forward, answer 202 per the transport spec
 		if len(req.ID) == 0 {
+			// only MCP notifications/* forward id-less: an id-less tools/call
+			// would otherwise reach upstream without passing the gate
+			if !IsNotification(req.Method) {
+				writeJSON(w, http.StatusBadRequest, Response{JSONRPC: "2.0", ID: json.RawMessage("null"),
+					Error: &RPCError{Code: CodeInvalidRequest, Message: "id-less request: only notifications/* may omit an id"}})
+				return
+			}
 			if _, _, err := u.RoundTrip(sessID, req); err != nil && e.Log != nil {
 				e.Log.Printf("notification forward failed: %v", err)
 			}

@@ -221,8 +221,24 @@ func Redact(tool string, args map[string]any, matched []labels.Block, classifier
 		names = append(names, k)
 	}
 	sort.Strings(names)
+	// values that carry a matched high-sensitivity block are masked by label,
+	// not shape: a labeled secret need not look like a credential
+	var high []labels.Block
+	for _, b := range matched {
+		if b.High() {
+			high = append(high, b)
+		}
+	}
+	m := labels.NewMatcher()
 	for _, k := range names {
-		r.Args = append(r.Args, RedactedArg{Name: k, Shape: maskValue(fmt.Sprintf("%v", args[k]), classifier)})
+		v := fmt.Sprintf("%v", args[k])
+		shape := ""
+		if len(high) > 0 && len(m.Matches(v, high)) > 0 {
+			shape = fullMask(v)
+		} else {
+			shape = maskValue(v, classifier)
+		}
+		r.Args = append(r.Args, RedactedArg{Name: k, Shape: shape})
 	}
 	seen := map[string]bool{}
 	for _, b := range matched {
@@ -264,6 +280,12 @@ func maskValue(v string, classifier *labels.Classifier) string {
 	}
 	masked := strings.Repeat("▒", minInt(len(v)-len(prefix), 12))
 	return prefix + masked + " (" + shape + ")"
+}
+
+// fullMask hides a value entirely (no prefix): it carries content from a
+// high-sensitivity block.
+func fullMask(v string) string {
+	return strings.Repeat("▒", minInt(len(v), 12)) + fmt.Sprintf(" (len=%d, carries high-sensitivity block content)", len(v))
 }
 
 func looksSensitiveKey(s string) bool {

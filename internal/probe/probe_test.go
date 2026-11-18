@@ -93,10 +93,25 @@ func TestFailClosed(t *testing.T) {
 		t.Fatalf("judge error must fail closed to tainted")
 	}
 
+	// a judge returning an unparsed/garbage verdict without an error must
+	// still fail closed, alone and in consensus with a clean judge
 	garbage := judgeFunc(func(r Request) (Verdict, error) {
-		return Verdict{}, nil // caller forgets ParseVerdict; simulate raw garbage below
+		return Verdict{Verdict: "probably", Confidence: 0.5}, nil
 	})
-	_ = garbage
+	empty := judgeFunc(func(r Request) (Verdict, error) { return Verdict{}, nil })
+	clean := judgeFunc(func(r Request) (Verdict, error) { return Verdict{Verdict: Clean, Confidence: 0.9}, nil })
+	for name, js := range map[string][]Judge{"garbage": {garbage}, "empty": {empty}, "consensus": {clean, garbage}} {
+		p := New(js, time.Second, time.Now)
+		if v := p.Check(context.Background(), "deploy preview", []labels.Block{uBlock("b-1", "x")}, nil, "net"); v.Verdict != Tainted {
+			t.Fatalf("%s judge verdict must fail closed to tainted, got %+v", name, v)
+		}
+	}
+	if _, err := ParseVerdict(`{"verdict":"clean"}`); err == nil {
+		t.Fatalf("missing confidence must be a schema violation")
+	}
+	if _, err := ParseVerdict(`{"confidence":0.9}`); err == nil {
+		t.Fatalf("missing verdict must be a schema violation")
+	}
 	if _, err := ParseVerdict("I think this looks totally fine, no JSON though"); err == nil {
 		t.Fatalf("non-JSON verdict must be a schema violation")
 	}

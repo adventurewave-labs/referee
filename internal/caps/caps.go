@@ -58,10 +58,24 @@ func (t *Token) Alive(now time.Time) bool {
 	return !t.Ended && now.Before(t.ExpiresAt)
 }
 
-// Covers finds a cap covering (tool, scopeVal, sens).
+// Covers finds a cap covering (tool, scopeVal, sens). scopeVal is matched
+// against every cap's pattern regardless of its ScopeArg — use CoversCall
+// when the call's arguments are known.
 func (t *Token) Covers(tool, scopeVal string, sens labels.Sensitivity) bool {
 	for _, c := range t.Caps {
 		if c.Covers(tool, scopeVal, sens) {
+			return true
+		}
+	}
+	return false
+}
+
+// CoversCall finds a cap covering the call, matching each cap's pattern
+// against the value of that cap's OWN scope argument (argValue looks it up),
+// so a cap scoped to one argument can never authorize via another's value.
+func (t *Token) CoversCall(tool string, argValue func(arg string) string, sens labels.Sensitivity) bool {
+	for _, c := range t.Caps {
+		if c.Covers(tool, argValue(c.ScopeArg), sens) {
 			return true
 		}
 	}

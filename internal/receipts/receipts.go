@@ -92,6 +92,26 @@ func Open(path, headsPath string, hmacKey []byte, priv ed25519.PrivateKey, batch
 	if err := checkChain(entries); err != nil {
 		return nil, err
 	}
+	// signed heads bind the chain to the key: a log rewritten with
+	// recomputed hashes conflicts with them and refuses to open. Entries
+	// past the last signed head must be fewer than one batch, otherwise
+	// heads were removed (assumes batch size was not shrunk across runs).
+	if headsPath != "" && priv != nil {
+		pub, _ := priv.Public().(ed25519.PublicKey)
+		_, last, err := verifyHeads(entries, headsPath, pub, false)
+		if err != nil {
+			return nil, err
+		}
+		if uint64(len(entries))-last >= uint64(batchSize) {
+			return nil, fmt.Errorf("receipts: %d entries after the last signed head (batch %d) — heads missing or truncated", uint64(len(entries))-last, batchSize)
+		}
+		// create the heads file up front so a later deletion is detectable
+		hf, err := os.OpenFile(headsPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		hf.Close()
+	}
 	if len(entries) > 0 {
 		l.seq = entries[len(entries)-1].Seq
 		l.prevHash = entries[len(entries)-1].Hash
@@ -246,37 +266,62 @@ func Verify(path, headsPath string, pub ed25519.PublicKey) (int, int, error) {
 	}
 	heads := 0
 	if headsPath != "" && pub != nil {
-		hf, err := os.Open(headsPath)
-		if os.IsNotExist(err) {
-			return len(entries), 0, nil
-		}
+		n, _, err := verifyHeads(entries, headsPath, pub, true)
 		if err != nil {
-			return len(entries), 0, err
+			return len(entries), n, err
 		}
-		defer hf.Close()
-		sc := bufio.NewScanner(hf)
-		for sc.Scan() {
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
-			}
-			var h Head
-			if err := json.Unmarshal([]byte(line), &h); err != nil {
-				return len(entries), heads, fmt.Errorf("receipts: bad head: %w", err)
-			}
-			if int(h.Seq) > len(entries) || h.Seq == 0 {
-				return len(entries), heads, fmt.Errorf("receipts: head seq %d beyond log", h.Seq)
-			}
-			if !ed25519.Verify(pub, headMessage(h.Seq, h.Hash), h.SigBytes()) {
-				return len(entries), heads, fmt.Errorf("receipts: bad head signature at seq %d", h.Seq)
-			}
-			if entries[h.Seq-1].Hash != h.Hash {
-				return len(entries), heads, fmt.Errorf("receipts: head hash mismatch at seq %d", h.Seq)
-			}
-			heads++
-		}
+		heads = n
 	}
 	return len(entries), heads, nil
+}
+
+// verifyHeads checks every signed batch head in headsPath against the chain:
+// valid signature, seq inside the log, hash equal to the entry it signs.
+// Returns the number of heads verified and the highest signed seq. A missing
+// heads file is an error when the log has entries and mustExist is set —
+// deleting the signature evidence must not read as success.
+func verifyHeads(entries []Entry, headsPath string, pub ed25519.PublicKey, mustExist bool) (int, uint64, error) {
+	hf, err := os.Open(headsPath)
+	if os.IsNotExist(err) {
+		if mustExist && len(entries) > 0 {
+			return 0, 0, fmt.Errorf("receipts: heads file %s missing — signed-head evidence absent", headsPath)
+		}
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	defer hf.Close()
+	heads := 0
+	var last uint64
+	sc := bufio.NewScanner(hf)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var h Head
+		if err := json.Unmarshal([]byte(line), &h); err != nil {
+			return heads, last, fmt.Errorf("receipts: bad head: %w", err)
+		}
+		if int(h.Seq) > len(entries) || h.Seq == 0 {
+			return heads, last, fmt.Errorf("receipts: head seq %d beyond log", h.Seq)
+		}
+		if !ed25519.Verify(pub, headMessage(h.Seq, h.Hash), h.SigBytes()) {
+			return heads, last, fmt.Errorf("receipts: bad head signature at seq %d", h.Seq)
+		}
+		if entries[h.Seq-1].Hash != h.Hash {
+			return heads, last, fmt.Errorf("receipts: head hash mismatch at seq %d", h.Seq)
+		}
+		if h.Seq > last {
+			last = h.Seq
+		}
+		heads++
+	}
+	if err := sc.Err(); err != nil {
+		return heads, last, err
+	}
+	return heads, last, nil
 }
 
 // Search filters entries by non-empty predicate fields.

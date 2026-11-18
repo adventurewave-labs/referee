@@ -30,7 +30,8 @@ type Engine struct {
 // called. Denied calls never reach upstream.
 func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallResult, bool, error) {
 	tool := e.Policy.ToolFor(params.Name)
-	token := e.Caps.Get(sess.TaskID)
+	taskID := sess.TaskID
+	token := e.Caps.Get(taskID)
 	blocks := sess.Snapshot()
 
 	argsJSON, _ := json.Marshal(params.Arguments)
@@ -57,6 +58,13 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 				d.Rule = rule
 				d.Approver = approver
 				d.Reason = res.Reason
+				// the challenge blocked: the task may have ended or its TTL
+				// lapsed meanwhile — an approval never outlives the token
+				if d.Action != gate.Deny && !tokenStillLive(e, taskID, token) {
+					d.Action = gate.Deny
+					d.Rule += "+cap:token-dead"
+					d.Reason = "approved, but the task token died while the challenge was pending (task end or TTL); denying"
+				}
 			}
 		}
 	}
@@ -72,6 +80,13 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 	default:
 		return DenyResult(d.Action, d.Rule, d.Reason), false, nil
 	}
+}
+
+// tokenStillLive reports whether the task's token is still the live one the
+// call was gated with (not ended, not expired, not replaced).
+func tokenStillLive(e *Engine, taskID string, gated *caps.Token) bool {
+	cur := e.Caps.Get(taskID)
+	return gated != nil && cur == gated
 }
 
 // IngestResult captures an upstream tools/call result into the shadow
