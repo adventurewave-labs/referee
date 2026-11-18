@@ -4,5 +4,5 @@ referee-heads*.jsonl
 *.seed
 *.key
 remote-out/
-referee
+/referee
 /dist/

@@ -44,9 +44,18 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
     conf-high), double-injection set-probe, gate §5.3 matrix, tamper
     detection, Slack signature verification, stdio+HTTP e2e,
     `TestContainmentLatencyBudget` (<5ms) + bench.
-  - Docs: README, docs/threat-model.md, docs/label-semantics.md,
-    docs/policy-cookbook.md; examples/policy-coding-agent.yaml; CI workflow;
-    scripts/ci.sh; Makefile; repo AGENTS.md (gate anchor).
+- Docs: README, docs/threat-model.md, docs/label-semantics.md,
+  docs/policy-cookbook.md; examples/policy-coding-agent.yaml; CI workflow;
+  scripts/ci.sh; Makefile; repo AGENTS.md (gate anchor).
+- 2026-11-18 (Mac-side unblock): the bare `referee` line in `.gitignore`
+  was swallowing `cmd/referee/` — the CLI source (main/cmds/serve.go)
+  never entered commit be83ff2, so the first two shipped bundles had NO
+  CLI to compile (plane worker r2 came back BLOCKED for exactly this).
+  Fixed: line is now root-anchored `/referee` (binary only), `cmd/referee`
+  copied from the parent clone and committed on `funnel/referee`, branch
+  pushed to origin. Same `.gitignore` fix applied (uncommitted) to the
+  parent clone's working tree at
+  `~/Downloads/turbo-rig/projects/referee`.
 - NEVER compiled or tested yet — no Go toolchain on the Mac cockpit; the
   whole tree was written cold and reviewed by hand only. First build is the
   next session's job.
@@ -56,7 +65,8 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
 - `bash scripts/ci.sh` (bootstraps Go 1.22.10 into /tmp, then mod tidy +
   vet + build + test + bench) — expect compile fixes; iterate until green.
 - `go.sum` generation (go mod tidy does it; copy into repo and commit).
-- Push `funnel/referee` (and/or `feat/mvp-v0.1`) to origin.
+- Push `feat/mvp-v0.1` to origin (`funnel/referee` already pushed; the PR
+  branch is funnel/referee — reconcile or drop feat/mvp-v0.1 at PR time).
 - Rig gate: `review.sh` per constitution (builder ≠ reviewer, fail-closed)
   before the PR.
 - Open PR on GitHub: `feat/mvp-v0.1` → `main` (repo main currently holds
