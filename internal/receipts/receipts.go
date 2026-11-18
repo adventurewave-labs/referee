@@ -113,7 +113,11 @@ func Open(path, headsPath string, hmacKey []byte, priv ed25519.PrivateKey, batch
 			return nil, err
 		}
 		if st, serr := hf.Stat(); serr == nil && st.Size() == 0 {
-			meta, _ := json.Marshal(map[string]any{"heads_meta": map[string]int{"batch": batchSize}})
+			sig := ed25519.Sign(priv, headsMetaMessage(batchSize))
+			meta, _ := json.Marshal(map[string]any{
+				"heads_meta": map[string]int{"batch": batchSize},
+				"sig":        hex.EncodeToString(sig),
+			})
 			hf.Write(append(meta, '\n'))
 		}
 		hf.Close()
@@ -195,6 +199,11 @@ func signHead(priv ed25519.PrivateKey, seq uint64, hash string) Head {
 
 func headMessage(seq uint64, hash string) []byte {
 	return []byte(fmt.Sprintf("referee-head|%d|%s", seq, hash))
+}
+
+// headsMetaMessage is the signed payload of the heads-file meta line.
+func headsMetaMessage(batch int) []byte {
+	return []byte(fmt.Sprintf("referee-heads-meta|batch=%d", batch))
 }
 
 // computeHash chains the entry onto its predecessor.
@@ -314,8 +323,17 @@ func verifyHeads(entries []Entry, headsPath string, pub ed25519.PublicKey, mustE
 				HeadsMeta struct {
 					Batch int `json:"batch"`
 				} `json:"heads_meta"`
+				Sig string `json:"sig"`
 			}
-			if json.Unmarshal([]byte(line), &meta) == nil && meta.HeadsMeta.Batch > 0 {
+			if jerr := json.Unmarshal([]byte(line), &meta); jerr == nil && meta.HeadsMeta.Batch > 0 {
+				// the meta line is signed evidence: a forged or unsigned batch
+				// size is treated as absent — the empty-heads refusal below
+				// then fires fail-closed (round-7 finding)
+				sig, serr2 := hex.DecodeString(meta.Sig)
+				if serr2 != nil || meta.HeadsMeta.Batch <= 0 ||
+					!ed25519.Verify(pub, headsMetaMessage(meta.HeadsMeta.Batch), sig) {
+					return 0, 0, fmt.Errorf("receipts: heads file %s has an invalid heads_meta signature", headsPath)
+				}
 				metaBatch = meta.HeadsMeta.Batch
 				continue
 			}
@@ -341,13 +359,26 @@ func verifyHeads(entries []Entry, headsPath string, pub ed25519.PublicKey, mustE
 	if err := sc.Err(); err != nil {
 		return heads, last, err
 	}
-	if mustExist && len(entries) > 0 && heads == 0 {
+	if mustExist && len(entries) > 0 {
+		// the signed meta line is load-bearing evidence: its absence means the
+		// heads file was rewritten or truncated below line one
+		if metaBatch == 0 {
+			return 0, 0, fmt.Errorf("receipts: heads file %s has no valid heads_meta line — signature evidence absent", headsPath)
+		}
 		// a fresh log shorter than one batch has legitimately never flushed a
 		// head; beyond that, zero heads means the evidence was removed
-		if metaBatch > 0 && uint64(len(entries)) < uint64(metaBatch) {
-			return 0, 0, nil
+		if heads == 0 {
+			if uint64(len(entries)) < uint64(metaBatch) {
+				return 0, 0, nil
+			}
+			return 0, 0, fmt.Errorf("receipts: heads file %s contains no signed heads — signature evidence absent", headsPath)
 		}
-		return 0, 0, fmt.Errorf("receipts: heads file %s contains no signed heads — signature evidence absent", headsPath)
+		// unsigned tail: entries after the last signed head must be fewer
+		// than one batch, else head evidence was removed (same rule Open
+		// enforces on reopen — round-7 finding)
+		if uint64(len(entries))-last >= uint64(metaBatch) {
+			return heads, last, fmt.Errorf("receipts: %d entries after the last signed head (batch %d) — heads missing or truncated", uint64(len(entries))-last, metaBatch)
+		}
 	}
 	return heads, last, nil
 }

@@ -224,3 +224,66 @@ func TestFreshDeploymentVerifies(t *testing.T) {
 		t.Fatalf("expected 3 entries / 0 heads, got %d/%d", n, heads)
 	}
 }
+
+// the heads_meta line is signed evidence: a forged batch size must not
+// excuse a truncated heads file.
+func TestForgedHeadsMetaRefused(t *testing.T) {
+	logPath, headsPath := tempLog(t)
+	priv := newSigningKey(t)
+	l, err := Open(logPath, headsPath, []byte("k"), priv, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if _, _, err := l.Append(Record{Task: "t", Tool: "x", Rule: "r", Decision: "deny", ArgsCanonical: "{}"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forged := `{"heads_meta":{"batch":100000},"sig":"deadbeef"}`
+	if err := os.WriteFile(headsPath, []byte(forged+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Verify(logPath, headsPath, priv.Public().(ed25519.PublicKey)); err == nil {
+		t.Fatalf("forged heads_meta must be refused")
+	}
+}
+
+// removing tail heads beyond one batch must fail Verify exactly like it
+// fails Open's reopen check.
+func TestUnsignedTailRefused(t *testing.T) {
+	logPath, headsPath := tempLog(t)
+	priv := newSigningKey(t)
+	l, err := Open(logPath, headsPath, []byte("k"), priv, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		if _, _, err := l.Append(Record{Task: "t", Tool: "x", Rule: "r", Decision: "deny", ArgsCanonical: "{}"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// keep meta + head@2 only: entries 3,4 lose their signed evidence
+	lines := strings.Split(string(mustRead(t, headsPath)), "\n")
+	var kept []string
+	for _, ln := range lines {
+		if ln == "" || strings.Contains(ln, `"seq":4"`) || strings.Contains(ln, `"seq":4`) {
+			continue
+		}
+		kept = append(kept, ln)
+	}
+	if err := os.WriteFile(headsPath, []byte(strings.Join(kept, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Verify(logPath, headsPath, priv.Public().(ed25519.PublicKey)); err == nil {
+		t.Fatalf("unsigned tail beyond one batch must be refused")
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}

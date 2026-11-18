@@ -100,3 +100,15 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
   scenario from the round-6 finding, now green.
 - FUNNEL-STATE Not done / Next rewritten to current truth.
 - CI: green.
+
+## Gate round 8 log (2026-11-18)
+
+- Round 7 (claude reviewer): REVISE — heads_meta was unsigned (a forged
+  batch size excused zero heads) and Verify never checked entries after
+  the last kept head.
+- Fix: the meta line is now SIGNED with the receipt ed25519 key
+  (referee-heads-meta|batch=N); an invalid/unsigned meta refuses
+  fail-closed, and Verify enforces Open's reopen tail rule (entries after
+  the last signed head must be < batch).
+- Regressions: TestForgedHeadsMetaRefused, TestUnsignedTailRefused,
+  TestFreshDeploymentVerifies — all green. CI: green.
