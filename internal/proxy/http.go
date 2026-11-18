@@ -155,7 +155,7 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				}
 				mu.Unlock()
 			}
-			e.IngestUpstream(sess, resp.Result)
+			e.IngestResponse(sess, resp)
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -226,6 +226,11 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				return
 			}
 			e.IngestResult(sess, params, resp.Result)
+			if resp.Error != nil {
+				if eb, eberr := json.Marshal(resp.Error); eberr == nil {
+					e.IngestUpstream(sess, eb)
+				}
+			}
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -237,7 +242,7 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				Error: &RPCError{Code: CodeInternalError, Message: err.Error()}})
 			return
 		}
-		e.IngestUpstream(sess, resp.Result)
+		e.IngestResponse(sess, resp)
 		writeJSON(w, http.StatusOK, resp)
 	})
 	return mux

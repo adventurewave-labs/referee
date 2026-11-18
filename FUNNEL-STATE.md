@@ -56,9 +56,9 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
   pushed to origin. Same `.gitignore` fix applied (uncommitted) to the
   parent clone's working tree at
   `~/Downloads/turbo-rig/projects/referee`.
-- NEVER compiled or tested yet — no Go toolchain on the Mac cockpit; the
-  whole tree was written cold and reviewed by hand only. First build is the
-  next session's job.
+- COMPILED + TESTED since 2026-11-18 (first compile in gate round 1; the
+  "written cold, reviewed by hand only" note above is historical — see the
+  gate round logs below for the current CI state).
 
 ## Not done
 
@@ -153,3 +153,15 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
   a FIRST-wins differential upstream; with the fix the upstream receives
   the gate-evaluated name, never the raw first key.
 - CI: green (vet/build/test/bench, containment 41µs/op).
+
+## Gate round 6 log (2026-11-18)
+
+- Round 5 (claude reviewer): REVISE — upstream error objects and
+  structuredContent text reached the agent unlabeled (integrity fail-open).
+- Fix closes the WHOLE class: IngestResponse (result + error) on both
+  transports; RPCError message/data collected; every string leaf of
+  structuredContent ingested (bounded 64 leaves/subtree); TextFromResult
+  extracts structuredContent too. All upstream→agent text is now labeled.
+- Stale FUNNEL-STATE line ("NEVER compiled") fixed — gate noticed it.
+- Unit regressions extended: error-object ingestion + structuredContent
+  leaf ingestion. CI: green.

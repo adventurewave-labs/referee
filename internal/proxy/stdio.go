@@ -153,6 +153,11 @@ func RunStdioSession(e *Engine, sess *Session, r io.Reader, w io.Writer, upstrea
 				continue
 			}
 			e.IngestResult(sess, params, upResp.Result)
+			if upResp.Error != nil {
+				if eb, eberr := json.Marshal(upResp.Error); eberr == nil {
+					e.IngestUpstream(sess, eb)
+				}
+			}
 			if err := sendAgent(upResp); err != nil {
 				return err
 			}
@@ -167,7 +172,7 @@ func RunStdioSession(e *Engine, sess *Session, r io.Reader, w io.Writer, upstrea
 			}
 			continue
 		}
-		e.IngestUpstream(sess, resp.Result)
+		e.IngestResponse(sess, resp)
 		if err := sendAgent(resp); err != nil {
 			return err
 		}

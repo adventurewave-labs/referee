@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"sort"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -221,6 +222,21 @@ func (e *Engine) IngestUpstream(sess *Session, raw json.RawMessage) {
 	}
 }
 
+// IngestResponse labels a full upstream response: its result payload AND its
+// error object — an upstream error message is as upstream-controlled as any
+// tool result and must not reach the agent unlabeled (round-5 finding).
+func (e *Engine) IngestResponse(sess *Session, resp *Response) {
+	if resp == nil {
+		return
+	}
+	e.IngestUpstream(sess, resp.Result)
+	if resp.Error != nil {
+		if b, err := json.Marshal(resp.Error); err == nil {
+			e.IngestUpstream(sess, b)
+		}
+	}
+}
+
 // collectPayloadText gathers strings under the text-bearing keys of an
 // upstream payload, bounded in depth.
 func collectPayloadText(v any, depth int) []string {
@@ -231,8 +247,13 @@ func collectPayloadText(v any, depth int) []string {
 	case map[string]any:
 		var out []string
 		for k, val := range t {
-			if s, ok := val.(string); ok && len(s) > 0 &&
-				(k == "text" || k == "description" || k == "instructions") {
+			if k == "structuredContent" {
+				// MCP structuredContent IS content: every string leaf in its
+				// subtree is upstream-controlled text (bounded)
+				out = append(out, collectAllStrings(val, depth+1)...)
+				continue
+			}
+			if s, ok := val.(string); ok && len(s) > 0 && knownTextKey(k) {
 				out = append(out, s)
 				continue
 			}
@@ -243,6 +264,53 @@ func collectPayloadText(v any, depth int) []string {
 		var out []string
 		for _, item := range t {
 			out = append(out, collectPayloadText(item, depth+1)...)
+		}
+		return out
+	}
+	return nil
+}
+
+// knownTextKey names the payload keys that carry agent-visible prose.
+func knownTextKey(k string) bool {
+	switch k {
+	case "text", "description", "instructions", "message", "data":
+		return true
+	}
+	return false
+}
+
+// collectAllStrings gathers every string leaf of a structured subtree,
+// bounded in count so a hostile payload cannot flood the shadow context.
+func collectAllStrings(v any, depth int) []string {
+	if depth > 12 {
+		return nil
+	}
+	switch t := v.(type) {
+	case string:
+		if len(t) > 0 {
+			return []string{t}
+		}
+	case []any:
+		var out []string
+		for _, item := range t {
+			out = append(out, collectAllStrings(item, depth+1)...)
+			if len(out) >= 64 {
+				return out[:64]
+			}
+		}
+		return out
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var out []string
+		for _, k := range keys {
+			out = append(out, collectAllStrings(t[k], depth+1)...)
+			if len(out) >= 64 {
+				return out[:64]
+			}
 		}
 		return out
 	}

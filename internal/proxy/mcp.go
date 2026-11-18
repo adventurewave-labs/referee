@@ -70,8 +70,9 @@ type ResourceBlock struct {
 
 // ToolCallResult is the MCP tools/call result shape.
 type ToolCallResult struct {
-	Content []ContentBlock `json:"content"`
-	IsError bool           `json:"isError,omitempty"`
+	Content           []ContentBlock  `json:"content"`
+	IsError           bool            `json:"isError,omitempty"`
+	StructuredContent json.RawMessage `json:"structuredContent,omitempty"`
 }
 
 // DenyResult builds the MCP error result the agent sees when the gate
@@ -120,6 +121,15 @@ func TextFromResult(raw json.RawMessage) string {
 		if c.Resource != nil && c.Resource.Text != "" {
 			sb.WriteString(c.Resource.Text)
 			sb.WriteString("\n")
+		}
+	}
+	if len(r.StructuredContent) > 0 {
+		var sc any
+		if err := json.Unmarshal(r.StructuredContent, &sc); err == nil {
+			for _, s := range collectAllStrings(sc, 0) {
+				sb.WriteString(s)
+				sb.WriteString("\n")
+			}
 		}
 	}
 	return sb.String()
