@@ -59,6 +59,8 @@ func main() {
 		err = cmdPolicy(os.Args[2:])
 	case "demo":
 		err = runDemo(os.Stdout)
+	case "tune":
+		err = cmdTune(os.Args[2:])
 	case "approve":
 		err = cmdApprove(os.Args[2:])
 	case "help", "-h", "--help":
