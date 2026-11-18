@@ -1,0 +1,8 @@
+# receipts and keys are per-deployment state — never commit
+referee-receipts*.jsonl
+referee-heads*.jsonl
+*.seed
+*.key
+remote-out/
+referee
+/dist/
