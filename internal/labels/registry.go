@@ -1,6 +1,7 @@
 package labels
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -162,11 +163,24 @@ func globMatch(pattern, s string) bool {
 	return p == len(pattern)
 }
 
-// NormalizePath expands a leading "~/" for path-policy comparisons.
+// NormalizePath resolves a tool-supplied path to absolute form for
+// path-policy comparisons: "~" and "~/" expand to $HOME and relative paths
+// resolve against the server cwd — spellings that could dodge absolute
+// rules must not dodge them (round-3 finding #3).
 func NormalizePath(p string) string {
 	p = filepath.ToSlash(p)
-	if strings.HasPrefix(p, "~/") {
-		p = strings.TrimPrefix(p, "~/")
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			if p == "~" {
+				return filepath.ToSlash(home)
+			}
+			return filepath.ToSlash(filepath.Join(home, p[2:]))
+		}
+	}
+	if !strings.HasPrefix(p, "/") {
+		if abs, err := filepath.Abs(p); err == nil {
+			return filepath.ToSlash(abs)
+		}
 	}
 	return p
 }

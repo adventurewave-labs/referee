@@ -125,3 +125,17 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
   unused consensus flag, AGENTS.md review-lane grammar) — listed for the
   PR description as known items, not fixed in this round.
 - CI: green (vet/build/test/bench, containment 49µs/op vs 5ms budget).
+
+## Gate round 4 log (2026-11-18)
+
+- Round 3 (claude reviewer): REVISE — 5 blocking findings, all closed:
+  1. LoadPubKey now trims whitespace (serve's hex+newline file loads).
+  2. verify CLI defaults to referee-pubkey.hex and refuses an unsigned
+     check when the heads file has entries (no silent degrade).
+  3. NormalizePath resolves ~/ and relative paths to absolute — path
+     policies can no longer be dodged by spelling.
+  4. HTTP initialize responses are ingested as untrusted (hook added in
+     the initialize branch; passthrough already covered).
+  5. .gitignore mangled line (literal \n) rewritten with real newlines.
+- New regression: TestLoadPubKeyRoundTrip (serve's exported file loads).
+- CI: green (vet/build/test/bench).

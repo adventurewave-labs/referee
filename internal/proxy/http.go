@@ -155,6 +155,7 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				}
 				mu.Unlock()
 			}
+			e.IngestUpstream(sess, resp.Result)
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}

@@ -19,7 +19,7 @@ func cmdVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	logPath := fs.String("log", "referee-receipts.jsonl", "receipt log path")
 	headsPath := fs.String("heads", "referee-heads.jsonl", "batch-heads path")
-	pubPath := fs.String("pubkey", "", "ed25519 public key file (hex); head signatures checked when given")
+	pubPath := fs.String("pubkey", "referee-pubkey.hex", "ed25519 public key file (hex); batch heads checked when given")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -27,12 +27,23 @@ func cmdVerify(args []string) error {
 	if err != nil {
 		return err
 	}
+	if pub == nil && headsHaveContent(*headsPath) {
+		// no key: a log rewritten with recomputed hashes would print OK —
+		// refuse the unsigned check instead of degrading silently
+		return fmt.Errorf("verify: %s has entries but no pubkey was loaded — pass --pubkey", *headsPath)
+	}
 	n, heads, err := receipts.Verify(*logPath, *headsPath, pub)
 	if err != nil {
 		return fmt.Errorf("verify FAILED: %w", err)
 	}
 	fmt.Printf("OK: %d entries verified, %d batch heads checked\n", n, heads)
 	return nil
+}
+
+// headsHaveContent reports whether the heads file exists and is non-empty.
+func headsHaveContent(path string) bool {
+	b, err := os.ReadFile(path)
+	return err == nil && len(bytes.TrimSpace(b)) > 0
 }
 
 func cmdWhy(args []string) error {

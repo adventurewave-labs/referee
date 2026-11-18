@@ -7,4 +7,6 @@ referee-heads*.jsonl
 *hmac-key*
 remote-out/
 /referee
-/dist/\nreferee-dashboard-token\nreferee-pubkey.hex\n
+/dist/
+referee-dashboard-token
+referee-pubkey.hex

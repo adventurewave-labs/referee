@@ -4,6 +4,7 @@
 package keys
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -84,7 +85,7 @@ func LoadPubKey(path string) (ed25519.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, derr := hex.DecodeString(string(b))
+	raw, derr := hex.DecodeString(string(bytes.TrimSpace(b)))
 	if derr != nil || len(raw) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("keys: %s is not a %d-byte hex ed25519 public key", path, ed25519.PublicKeySize)
 	}
