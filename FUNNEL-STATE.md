@@ -82,6 +82,15 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
    APPROVED, awaiting human merge"` to free the worker lane so
    funnel-tripwire-mvp and funnel-gauntlet-bootstrap dispatch.
 
+## FINAL STATE (2026-11-18 ~19:30 CST) — parked per Law 11 at gate round 12
+
+- PR #1 open: https://github.com/adventurewave-labs/referee/pull/1 (funnel/referee → main, 🚫 not for merge — round-12 REVISE with codex's 10 findings listed in the PR body as the merge roadmap).
+- Stacked PR #2: feat/probe-tuner-r4 → funnel/referee (tuner APPROVED on its own diff round 1; codex round-2 has two small findings open).
+- History graft: 1294cbb joined the unrelated bootstrap main root (ours won README).
+- Gate trail: rounds 1-8 plane worker (died 12:09 CST), 9-11 cockpit takeover (claude), 12 codex rotated in → 7×P1 (path traversal in cap scopes, judge-prompt confidentiality, probe cache trust boundary, expiry-during-probe forwarding, receipt delimiter ambiguity, upstream env inheritance, trailing-JSON verdict parse) + 3×P2.
+- Next session: fix the round-12 list on this branch, re-gate (expect the codex lane), then rebase the tuner stack, re-gate #2's two small findings, and only then lift the 🚫.
+- Branch wrinkle: tuner history lives on feat/probe-tuner-r4 (rebased; r2/r3 on origin are stale and safe to delete at merge time — created by this session).
+
 ## Cockpit takeover (2026-11-18 ~17:00 CST)
 
 - Plane worker vmi3680747 died at 12:09 CST (last heartbeat); mp directed the
