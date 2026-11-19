@@ -654,3 +654,14 @@ func TestDenyWhenTokenDiesDuringProbe(t *testing.T) {
 		t.Fatalf("unexpected deny text: %q", result.Content[0].Text)
 	}
 }
+
+// round-13 follow-up: UpstreamEnv must NEVER return nil — a nil cmd.Env
+// makes Go inherit the parent environment wholesale (secrets included).
+func TestUpstreamEnvNeverNil(t *testing.T) {
+	if env := UpstreamEnv(nil); env == nil {
+		t.Fatalf("UpstreamEnv(nil) returned nil — cmd.Env would inherit everything")
+	}
+	if env := UpstreamEnv([]string{"REF_JUDGE_API_KEY=sk"}); env == nil {
+		t.Fatalf("UpstreamEnv(only-secrets) returned nil — cmd.Env would inherit everything")
+	}
+}

@@ -315,7 +315,7 @@ var upstreamEnvAllowlist = map[string]bool{
 // UpstreamEnv builds the subprocess environment: the allowlist survives,
 // everything else (REF_* secrets especially) is dropped.
 func UpstreamEnv(inherited []string) []string {
-	var out []string
+	out := []string{} // non-nil: a nil cmd.Env means INHERIT-ALL in Go
 	for _, kv := range inherited {
 		if i := strings.IndexByte(kv, '='); i > 0 && upstreamEnvAllowlist[kv[:i]] {
 			out = append(out, kv)
