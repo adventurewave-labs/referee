@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // RedactMode is the per-tool argument-sanitization policy (PRD §6 P1
@@ -42,21 +43,10 @@ func RedactValue(value string, matched []Block, mode RedactMode, classifier *Cla
 	if mode == RedactNone || value == "" {
 		return value, false
 	}
-	// Case-insensitive matching runs on a LOWERED copy with a per-byte offset
-	// map back to the original: Unicode case folding changes rune byte
-	// lengths (İ → i̇ is 2→3 bytes), so naive index math on the lowered text
-	// cuts the ORIGINAL at misaligned offsets and can leak secret fragments
-	// past the re-gate (round-18 finding).
-	lower, lmap := lowerWithMap(value)
-	origStart := func(low int) int {
-		if low < 0 {
-			return 0
-		}
-		if low >= len(lmap) {
-			return len(value)
-		}
-		return lmap[low]
-	}
+	// Case-insensitive spans are found by RUNE-WISE fold scanning over the
+	// ORIGINAL bytes: ToLower-based index math misaligns under Unicode case
+	// folding (byte lengths change: ẞ→ß, K→k) and a shifted cut leaks
+	// fragments past the re-gate (round-18/23 findings).
 	type span struct{ start, end int }
 	var spans []span
 	addSpan := func(start, end int) {
@@ -65,9 +55,6 @@ func RedactValue(value string, matched []Block, mode RedactMode, classifier *Cla
 		}
 		spans = append(spans, span{start, end})
 	}
-	addLowerSpan := func(lowStart, lowEnd int) {
-		addSpan(origStart(lowStart), origStart(lowEnd))
-	}
 	encodedHit := false
 
 	for _, b := range matched {
@@ -75,21 +62,18 @@ func RedactValue(value string, matched []Block, mode RedactMode, classifier *Cla
 		if text == "" {
 			continue
 		}
-		// literal span (case-insensitive, offset-mapped)
-		if i := strings.Index(lower, strings.ToLower(text)); i >= 0 {
-			addLowerSpan(i, i+len(strings.ToLower(text)))
+		// literal span (case-insensitive, original offsets)
+		if spansFound := foldAll(value, text); len(spansFound) > 0 {
+			for _, sp := range spansFound {
+				addSpan(sp[0], sp[1])
+			}
 			continue
 		}
 		// long-token spans from the block
 		hit := false
 		for tok := range longTokens(text, tokenLen) {
-			for i := 0; i+len(tok) <= len(lower); {
-				j := strings.Index(lower[i:], tok)
-				if j < 0 {
-					break
-				}
-				addLowerSpan(i+j, i+j+len(tok))
-				i += j + len(tok)
+			for _, sp := range foldAll(value, tok) {
+				addSpan(sp[0], sp[1])
 				hit = true
 			}
 		}
@@ -161,18 +145,39 @@ func minInt(a, b int) int {
 	return b
 }
 
-// lowerWithMap lowercases s recording, for each BYTE offset of the result,
-// the corresponding byte offset in the original string.
-func lowerWithMap(s string) (string, []int) {
-	var b strings.Builder
-	var m []int
-	for i, r := range s {
-		lr := unicode.ToLower(r)
-		ls := string(lr)
-		for range ls {
-			m = append(m, i)
+// foldAll finds every case-insensitive occurrence of needle in s, returning
+// ORIGINAL byte spans. Matching is rune-wise simple-case-insensitive
+// (ToLower per rune), so needles whose lowered form changes byte length are
+// handled exactly: spans are computed in the original string's own offsets.
+func foldAll(s, needle string) [][2]int {
+	var out [][2]int
+	i := 0
+	for i < len(s) {
+		if n := foldLen(s[i:], needle); n > 0 {
+			out = append(out, [2]int{i, i + n})
+			i += n
+			continue
 		}
-		b.WriteString(ls)
+		i++
 	}
-	return b.String(), m
+	return out
+}
+
+// foldLen reports how many bytes of s form a case-insensitive match of
+// needle at the START of s (0 = no match).
+func foldLen(s, needle string) int {
+	vi, ni := 0, 0
+	for ni < len(needle) {
+		if vi >= len(s) {
+			return 0
+		}
+		vr, vs := utf8.DecodeRuneInString(s[vi:])
+		nr, ns := utf8.DecodeRuneInString(needle[ni:])
+		if unicode.ToLower(vr) != unicode.ToLower(nr) {
+			return 0
+		}
+		vi += vs
+		ni += ns
+	}
+	return vi
 }

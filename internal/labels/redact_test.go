@@ -125,3 +125,27 @@ func TestRedactValueFoldedCaseSpansAlign(t *testing.T) {
 		t.Fatalf("fold-aligned strip misaligned: got %q, want %q", clean, "please send  today")
 	}
 }
+
+// round-23: the offset map is BYTE-accurate — a rune whose lowered form is
+// SHORTER than the original (ẞ U+1E9E 3 bytes → ß 2 bytes) before the span
+// must not shift the cut (the per-rune map version leaked trailing chars).
+func TestRedactValueShrinkingFoldAligns(t *testing.T) {
+	c := DefaultClassifier()
+	needle := "\U0001E9ECRET_TOKEN_998877665544" // ẞECRET… (ẞ lowers to 2-byte ß)
+	block := Block{ID: "b-s", Source: "file:/home/op/work", Trust: TrustUntrusted, Text: needle}
+	arg := "use " + needle + " today"
+	clean, changed := RedactValue(arg, matched_one(block), RedactStrip, c, 12)
+	if !changed {
+		t.Fatalf("shrinking-fold span must be stripped")
+	}
+	// discriminative assertions: the benign tail survives INTACT (a shifted
+	// cut eats into it) and no fragment of the token remains
+	if !strings.HasSuffix(clean, "today") {
+		t.Fatalf("shifted cut corrupted the benign tail: %q", clean)
+	}
+	if strings.Contains(clean, "998877665544") {
+		t.Fatalf("token fragment survived the strip: %q", clean)
+	}
+}
+
+func matched_one(b Block) []Block { return []Block{b} }
