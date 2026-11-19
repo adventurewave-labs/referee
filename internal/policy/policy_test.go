@@ -156,3 +156,16 @@ func TestDiffCoversLabelingAndJudgeFields(t *testing.T) {
 		}
 	}
 }
+
+// round-17: redact mode validation
+func TestRedactModeValidation(t *testing.T) {
+	f := sampleFile()
+	f.Tools[0].Redact = "obliterate"
+	if _, err := Compile(f); err == nil || !strings.Contains(err.Error(), "redact") {
+		t.Fatalf("bad redact mode must be rejected, got %v", err)
+	}
+	f.Tools[0].Redact = "strip"
+	if _, err := Compile(f); err != nil {
+		t.Fatalf("strip must compile: %v", err)
+	}
+}

@@ -77,8 +77,9 @@ which policy clause fired — args are keyed-HMAC'd, never stored raw.
 ## Status
 
 v0.1 (first working scaffold) — P0 scope, plus the P1 probe-tuning loop
-(`referee tune`, paired-replay corpus). Remaining P1: SIEM export (OTLP),
-redaction path, framework presets. Known limitations are documented honestly in
+(`referee tune`, paired-replay corpus) and the P1 redaction path
+(`redact: strip|mask` — auto-sanitize + re-gate). Remaining P1: SIEM export
+(OTLP), framework presets. Known limitations are documented honestly in
 [docs/threat-model.md](docs/threat-model.md) (§11 residual risks: transformed
 secrets that defeat all normalizations, classifier misses, missing task-end
 signals bounded by TTL).

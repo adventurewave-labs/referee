@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"fmt"
 	"log"
 	"sort"
@@ -45,6 +46,33 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 
 	argsJSON, _ := json.Marshal(params.Arguments)
 	d := e.Gate.Evaluate(gate.Input{TaskID: sess.TaskID, Tool: params.Name, Args: params.Arguments}, token, blocks)
+
+	// Redaction path (PRD §6 P1): where policy allows (tool redact:
+	// strip|mask), a tainted/high decision gets ONE re-gate over sanitized
+	// arguments. If the sanitized call clears every gated axis it forwards
+	// with the redacted arguments — the upstream tool never sees the tainted
+	// segments. Denials from the capability axis are not redactable, and a
+	// call that still fails the re-gate keeps its original decision.
+	if mode := labels.RedactMode(tool.Redact); mode != labels.RedactNone &&
+		(d.Action == gate.Challenge || d.Action == gate.Deny) &&
+		(strings.Contains(d.Rule, "tainted") || strings.HasPrefix(d.Rule, "conf:")) {
+		matched := blocksForIDs(blocks, d.BlockIDs)
+		if sanitized, changed := sanitizeArgs(params.Arguments, matched, mode, e.Gate.Classifier); changed {
+			d2 := e.Gate.Evaluate(gate.Input{TaskID: sess.TaskID, Tool: params.Name, Args: sanitized}, token, blocks)
+			if d2.Action == gate.Approve {
+				origRule := d.Rule
+				d = d2
+				d.Rule = "redact:" + string(mode) + "+" + origRule
+				d.Reason = "arguments auto-sanitized (" + string(mode) + "); re-gated clean on every axis; upstream receives the redacted arguments"
+				argsJSON, _ = json.Marshal(sanitized)
+				// write the sanitized values back into the shared arguments
+				// map: the caller's params IS the map the upstream call sends
+				for k, v := range sanitized {
+					params.Arguments[k] = v
+				}
+			}
+		}
+	}
 
 	if d.Action == gate.Challenge {
 		// The gate sends to a human: no challenge flow configured => fail closed.
@@ -346,4 +374,25 @@ func nameHMAC(key []byte, name string) []byte {
 	m := hmac.New(sha256.New, key)
 	m.Write([]byte("tool-name|" + name))
 	return m.Sum(nil)
+}
+
+// sanitizeArgs applies labels.RedactValue to every string argument value
+// against the blocks the containment matcher flagged; non-string arguments
+// pass through untouched.
+func sanitizeArgs(args map[string]any, matched []labels.Block, mode labels.RedactMode, classifier *labels.Classifier) (map[string]any, bool) {
+	changed := false
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		str, ok := v.(string)
+		if !ok {
+			out[k] = v
+			continue
+		}
+		clean, ch := labels.RedactValue(str, matched, mode, classifier, 12)
+		if ch {
+			changed = true
+		}
+		out[k] = clean
+	}
+	return out, changed
 }
