@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // RedactMode is the per-tool argument-sanitization policy (PRD §6 P1
@@ -41,7 +42,21 @@ func RedactValue(value string, matched []Block, mode RedactMode, classifier *Cla
 	if mode == RedactNone || value == "" {
 		return value, false
 	}
-	lower := strings.ToLower(value)
+	// Case-insensitive matching runs on a LOWERED copy with a per-byte offset
+	// map back to the original: Unicode case folding changes rune byte
+	// lengths (İ → i̇ is 2→3 bytes), so naive index math on the lowered text
+	// cuts the ORIGINAL at misaligned offsets and can leak secret fragments
+	// past the re-gate (round-18 finding).
+	lower, lmap := lowerWithMap(value)
+	origStart := func(low int) int {
+		if low < 0 {
+			return 0
+		}
+		if low >= len(lmap) {
+			return len(value)
+		}
+		return lmap[low]
+	}
 	type span struct{ start, end int }
 	var spans []span
 	addSpan := func(start, end int) {
@@ -50,6 +65,9 @@ func RedactValue(value string, matched []Block, mode RedactMode, classifier *Cla
 		}
 		spans = append(spans, span{start, end})
 	}
+	addLowerSpan := func(lowStart, lowEnd int) {
+		addSpan(origStart(lowStart), origStart(lowEnd))
+	}
 	encodedHit := false
 
 	for _, b := range matched {
@@ -57,9 +75,9 @@ func RedactValue(value string, matched []Block, mode RedactMode, classifier *Cla
 		if text == "" {
 			continue
 		}
-		// literal span (case-insensitive)
+		// literal span (case-insensitive, offset-mapped)
 		if i := strings.Index(lower, strings.ToLower(text)); i >= 0 {
-			addSpan(i, i+len(text))
+			addLowerSpan(i, i+len(strings.ToLower(text)))
 			continue
 		}
 		// long-token spans from the block
@@ -70,7 +88,7 @@ func RedactValue(value string, matched []Block, mode RedactMode, classifier *Cla
 				if j < 0 {
 					break
 				}
-				addSpan(i+j, i+j+len(tok))
+				addLowerSpan(i+j, i+j+len(tok))
 				i += j + len(tok)
 				hit = true
 			}
@@ -141,4 +159,20 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// lowerWithMap lowercases s recording, for each BYTE offset of the result,
+// the corresponding byte offset in the original string.
+func lowerWithMap(s string) (string, []int) {
+	var b strings.Builder
+	var m []int
+	for i, r := range s {
+		lr := unicode.ToLower(r)
+		ls := string(lr)
+		for range ls {
+			m = append(m, i)
+		}
+		b.WriteString(ls)
+	}
+	return b.String(), m
 }

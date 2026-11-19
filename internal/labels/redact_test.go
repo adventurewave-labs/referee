@@ -104,3 +104,24 @@ func TestRedactValueNoMatchUnchanged(t *testing.T) {
 }
 
 func matched_nothing() []Block { return nil }
+
+// round-18: spans computed on lowered text map back to ORIGINAL offsets —
+// case folding can change rune byte lengths (İ → i̇), and a naive cut would
+// mis-align and leak fragments.
+func TestRedactValueFoldedCaseSpansAlign(t *testing.T) {
+	c := DefaultClassifier()
+	needle := "\u0130NVOICE_NO_12345678" // İ folds to 3 bytes (i + combining dot)
+	block := Block{ID: "b-inv", Source: "file:/home/op/work", Trust: TrustUntrusted, Text: needle}
+	arg := "please send " + needle + " today"
+	matched := []Block{block}
+	clean, changed := RedactValue(arg, matched, RedactStrip, c, 12)
+	if !changed {
+		t.Fatalf("folded span must be stripped")
+	}
+	// EXACT alignment: the strip removes precisely the needle — the old
+	// lowered-offset cut (needle is 20 bytes lowered, 19 original) left
+	// fragments behind
+	if clean != "please send  today" {
+		t.Fatalf("fold-aligned strip misaligned: got %q, want %q", clean, "please send  today")
+	}
+}
