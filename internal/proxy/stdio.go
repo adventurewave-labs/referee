@@ -144,8 +144,19 @@ func RunStdioSession(e *Engine, sess *Session, r io.Reader, w io.Writer, upstrea
 				continue
 			}
 			// approved: forward upstream, capture the result into the shadow
-			// context, then relay the response verbatim.
-			upResp, err := roundTrip(upstream, upIn, req)
+			// context, then relay the response verbatim. The forwarded call
+			// carries the EFFECTIVE arguments — the engine may have sanitized
+			// them in place (redaction path), and the wire must match what
+			// the gate approved (round-24 finding).
+			effParams, mErr := json.Marshal(params)
+			if mErr != nil {
+				if err := respondErr(req.ID, CodeInternalError, "forward marshal failed"); err != nil {
+					return err
+				}
+				continue
+			}
+			effReq := Request{JSONRPC: req.JSONRPC, ID: req.ID, Method: req.Method, Params: effParams}
+			upResp, err := roundTrip(upstream, upIn, effReq)
 			if err != nil {
 				if err := respondErr(req.ID, CodeInternalError, "upstream call failed: "+err.Error()); err != nil {
 					return err

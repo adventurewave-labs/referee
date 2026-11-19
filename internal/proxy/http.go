@@ -219,7 +219,16 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				writeJSON(w, http.StatusOK, DenyResponse(req.ID, result))
 				return
 			}
-			resp, _, err := u.RoundTrip(sessID, req)
+			// forward the EFFECTIVE arguments (the engine may have sanitized
+			// them in place — redaction path, round-24 finding)
+			effParams, mErr := json.Marshal(params)
+			if mErr != nil {
+				writeJSON(w, http.StatusOK, Response{JSONRPC: "2.0", ID: req.ID,
+					Error: &RPCError{Code: CodeInternalError, Message: "forward marshal failed"}})
+				return
+			}
+			effReq := Request{JSONRPC: req.JSONRPC, ID: req.ID, Method: req.Method, Params: effParams}
+			resp, _, err := u.RoundTrip(sessID, effReq)
 			if err != nil {
 				writeJSON(w, http.StatusBadGateway, Response{JSONRPC: "2.0", ID: req.ID,
 					Error: &RPCError{Code: CodeInternalError, Message: err.Error()}})
