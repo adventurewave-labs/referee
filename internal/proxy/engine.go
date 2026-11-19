@@ -54,8 +54,11 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 	// segments. Denials from the capability axis are not redactable, and a
 	// call that still fails the re-gate keeps its original decision.
 	mode := labels.RedactMode(tool.Redact)
-	if mode == "" {
-		mode = labels.RedactNone // belt and braces: unnormalized configs never redact
+	switch mode {
+	case labels.RedactStrip, labels.RedactMask:
+		// known sanitize modes
+	default:
+		mode = labels.RedactNone // none, empty, and UNKNOWN modes never redact — unknown must not default to mask
 	}
 	if mode != labels.RedactNone &&
 		(d.Action == gate.Challenge || d.Action == gate.Deny) &&

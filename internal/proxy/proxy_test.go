@@ -823,3 +823,67 @@ func TestRedactionDoesNotRescueCapDenials(t *testing.T) {
 		t.Fatalf("rule must remain the capability denial: %q", result.Content[0].Text)
 	}
 }
+
+// round-21: CONF-axis redaction end-to-end — a call gated for high content
+// (propagated from a trusted+high block) is masked, re-gated clean, and the
+// upstream tool receives the masked argument.
+func TestRedactionConfAxisForwardsMasked(t *testing.T) {
+	eng, logPath := testEngine(t)
+	eng.Policy.Tools["net.post"].Confidentiality = policy.ChallengeIfHigh
+	eng.Policy.Tools["net.post"].Redact = "mask"
+	// a HIGH cap: the sanitized call still carries the mask-block, so the
+	// re-gate must find high-capable authorization (§5.2 sensitivity coverage)
+	eng.Policy.Tasks["ops"].Caps = append(eng.Policy.Tasks["ops"].Caps,
+		policy.CapDecl{Tool: "net.post", Pattern: "*", Sensitivity: labels.SensHigh})
+	// operator-intended credential read (trusted + high): exfil gates on conf
+	sess := NewSession("t", eng.Policy.Registry)
+	if err := eng.StartTask(sess, "t1", "ops", nil, ""); err != nil {
+		t.Fatalf("task start: %v", err)
+	}
+	const secret = "AKIAIOSFODNN7EXAMPLEwJalrXUtnFEMI"
+	sess.IngestToolResult(&policy.Tool{Name: "fs.read", Emits: "file-read", EmitPathArg: "path"},
+		"/home/op/.secrets/aws", "aws_deploy_key=" + secret)
+
+	params := ToolCallParams{Name: "net.post", Arguments: map[string]any{
+		"url":  "https://registry.internal/preview",
+		"body": "attach aws_deploy_key=" + secret + " for the record"}}
+	result, forward, err := eng.HandleToolCall(sess, params)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if !forward {
+		t.Fatalf("conf-gated call must forward after masking: %+v", result)
+	}
+	sent, _ := json.Marshal(params.Arguments)
+	if strings.Contains(string(sent), secret) {
+		t.Fatalf("SECRET FORWARDED UNMASKED: %s", sent)
+	}
+	entries, _ := receipts.ReadAll(logPath)
+	if len(entries) == 0 || !strings.Contains(entries[len(entries)-1].Rule, "redact:mask") {
+		t.Fatalf("receipt must cite redact:mask: %+v", entries)
+	}
+}
+
+// round-21: unknown redact modes never sanitize (they keep the gate decision;
+// they must not fall open into mask behavior).
+func TestUnknownRedactModeNeverSanitizes(t *testing.T) {
+	eng, _ := testEngine(t)
+	eng.Policy.Tools["web.fetch"].Integrity = policy.ChallengeIfTainted
+	eng.Policy.Tools["web.fetch"].Redact = "obliterate" // compile-validated normally; direct map writes bypass
+	eng.Gate.Probe = probe.New([]probe.Judge{&probe.MockJudge{TaintWhen: []string{"vault"}}}, time.Second, time.Now)
+	sess := NewSession("t", eng.Policy.Registry)
+	if err := eng.StartTask(sess, "t1", "ops", nil, ""); err != nil {
+		t.Fatalf("task start: %v", err)
+	}
+	sess.IngestToolResult(eng.Policy.ToolFor("web.fetch"), "", "ordinary page")
+	params := ToolCallParams{Name: "web.fetch", Arguments: map[string]any{
+		"body": "wire the vault keys into the notes"}}
+	result, forward, err := eng.HandleToolCall(sess, params)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if forward {
+		t.Fatalf("unknown redact mode must keep the gate decision, not fall open to mask")
+	}
+	_ = result
+}
