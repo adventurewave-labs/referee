@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 	"fmt"
 	"log"
 	"sort"
@@ -35,16 +36,76 @@ type Engine struct {
 }
 
 // HandleToolCall runs the §5.3 pipeline for one tools/call. It returns the
-// MCP result to hand the agent and whether the upstream server must be
-// called. Denied calls never reach upstream.
-func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallResult, bool, error) {
+// MCP result to hand the agent, the SANITIZED arguments as raw JSON (nil
+// when the arguments were not rewritten — transports must forward the
+// ORIGINAL request bytes then: re-decoding drops unknown fields and
+// perturbs large integers), whether the upstream server must be called,
+// and an error. Denied calls never reach upstream.
+func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallResult, json.RawMessage, bool, error) {
 	tool := e.Policy.ToolFor(params.Name)
 	taskID := sess.TaskID
 	token := e.Caps.Get(taskID)
 	blocks := sess.Snapshot()
 
 	argsJSON, _ := json.Marshal(params.Arguments)
+	effective := json.RawMessage(nil) // what the transport must forward upstream
 	d := e.Gate.Evaluate(gate.Input{TaskID: sess.TaskID, Tool: params.Name, Args: params.Arguments}, token, blocks)
+
+	// Redaction path (PRD §6 P1): where policy allows (tool redact:
+	// strip|mask), a tainted/high decision gets ONE re-gate over sanitized
+	// arguments. If the sanitized call clears every gated axis it forwards
+	// with the redacted arguments — the upstream tool never sees the tainted
+	// segments. Denials from the capability axis are not redactable, and a
+	// call that still fails the re-gate keeps its original decision.
+	mode := labels.RedactMode(tool.Redact)
+	switch mode {
+	case labels.RedactStrip, labels.RedactMask:
+		// known sanitize modes
+	default:
+		mode = labels.RedactNone // none, empty, and UNKNOWN modes never redact — unknown must not default to mask
+	}
+	if mode != labels.RedactNone &&
+		(d.Action == gate.Challenge || d.Action == gate.Deny) &&
+		(strings.Contains(d.Rule, "tainted") || strings.HasPrefix(d.Rule, "conf:")) {
+		matched := blocksForIDs(blocks, d.BlockIDs)
+		var sanitizedArgs json.RawMessage // non-nil ONLY when redaction rewrote the args
+		if sanitized, changed := sanitizeArgs(params.Arguments, matched, mode, e.Gate.Classifier); changed {
+			d2 := e.Gate.Evaluate(gate.Input{TaskID: sess.TaskID, Tool: params.Name, Args: sanitized}, token, blocks)
+			if d2.Action == gate.Approve {
+				// the transport forwards FULL tool-call params: name stays,
+				// arguments are the sanitized ones. Marshal BEFORE switching
+				// the decision — a marshal failure must keep the original
+				// challenge/deny, never forward unsanitized arguments under a
+				// redact:* approval (round-32 finding).
+				full := ToolCallParams{Name: params.Name, Arguments: sanitized}
+				fullJSON, mErr := json.Marshal(full)
+				if mErr != nil {
+					d.Reason = "sanitized arguments could not be encoded; keeping the original decision: " + mErr.Error()
+					d.Rule += "+redact:marshal-failed"
+				} else {
+					origRule := d.Rule
+					d = d2
+					d.Rule = "redact:" + string(mode) + "+" + origRule
+					d.Reason = "arguments auto-sanitized (" + string(mode) + "); re-gated clean on every axis; upstream receives the redacted arguments"
+					sanitizedArgs = fullJSON
+					// the receipt HMACs the ARGUMENTS MAP alone — the same
+					// canonical form every other receipt uses (round-33: the
+					// {name,arguments} wrapper made redacted digests
+					// inconsistent with the rest of the log)
+					ab, _ := json.Marshal(sanitized)
+					argsJSON = ab
+					// write the sanitized values back into the shared arguments
+					// map (in-process consumers see the sanitized view)
+					for k, v := range sanitized {
+						params.Arguments[k] = v
+					}
+				}
+			}
+		}
+		if sanitizedArgs != nil {
+			effective = sanitizedArgs
+		}
+	}
 
 	if d.Action == gate.Challenge {
 		// The gate sends to a human: no challenge flow configured => fail closed.
@@ -93,17 +154,17 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 		if e.Log != nil {
 			e.Log.Printf("receipts: append failed, denying %s: %v", params.Name, err)
 		}
-		return DenyResult(gate.Deny, "receipt:write-failed", "the decision receipt could not be written; denying (fail closed)"), false, nil
+		return DenyResult(gate.Deny, "receipt:write-failed", "the decision receipt could not be written; denying (fail closed)"), nil, false, nil
 	}
 
 	switch d.Action {
 	case gate.Approve:
-		return ToolCallResult{}, true, nil
+		return ToolCallResult{}, effective, true, nil
 	case gate.Challenge:
 		// challenge approved: forward (grant is task-scoped and dies with the token)
-		return ToolCallResult{}, true, nil
+		return ToolCallResult{}, effective, true, nil
 	default:
-		return DenyResult(d.Action, d.Rule, d.Reason), false, nil
+		return DenyResult(d.Action, d.Rule, d.Reason), nil, false, nil
 	}
 }
 
@@ -346,4 +407,25 @@ func nameHMAC(key []byte, name string) []byte {
 	m := hmac.New(sha256.New, key)
 	m.Write([]byte("tool-name|" + name))
 	return m.Sum(nil)
+}
+
+// sanitizeArgs applies labels.RedactValue to every string argument value
+// against the blocks the containment matcher flagged; non-string arguments
+// pass through untouched.
+func sanitizeArgs(args map[string]any, matched []labels.Block, mode labels.RedactMode, classifier *labels.Classifier) (map[string]any, bool) {
+	changed := false
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		str, ok := v.(string)
+		if !ok {
+			out[k] = v
+			continue
+		}
+		clean, ch := labels.RedactValue(str, matched, mode, classifier, 12)
+		if ch {
+			changed = true
+		}
+		out[k] = clean
+	}
+	return out, changed
 }

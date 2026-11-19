@@ -209,7 +209,7 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				return
 			}
 			req.Params = canonical
-			result, forward, err := e.HandleToolCall(sess, params)
+			result, effective, forward, err := e.HandleToolCall(sess, params)
 			if err != nil {
 				writeJSON(w, http.StatusOK, Response{JSONRPC: "2.0", ID: req.ID,
 					Error: &RPCError{Code: CodeInternalError, Message: err.Error()}})
@@ -219,7 +219,13 @@ func HTTPHandler(e *Engine, upstreamURL string) http.Handler {
 				writeJSON(w, http.StatusOK, DenyResponse(req.ID, result))
 				return
 			}
-			resp, _, err := u.RoundTrip(sessID, req)
+			// canonical params stay on the wire UNLESS redaction rewrote the
+			// arguments (round-29)
+			upReq := req
+			if effective != nil {
+				upReq = Request{JSONRPC: req.JSONRPC, ID: req.ID, Method: req.Method, Params: effective}
+			}
+			resp, _, err := u.RoundTrip(sessID, upReq)
 			if err != nil {
 				writeJSON(w, http.StatusBadGateway, Response{JSONRPC: "2.0", ID: req.ID,
 					Error: &RPCError{Code: CodeInternalError, Message: err.Error()}})

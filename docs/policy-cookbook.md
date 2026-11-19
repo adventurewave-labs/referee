@@ -116,3 +116,28 @@ Local mode (dev/dogfood): approve from the dashboard or
    `conf:challenge-if-high+high`, `auto:clean(...)`).
 3. `referee policy diff` before swapping — the gate's semantics change
    exactly along the reported lines.
+
+## Redaction path (auto-sanitize where policy allows)
+
+By default a tainted/high call challenges or denies. Opting a tool into
+`redact: strip` (remove matched segments) or `redact: mask` (destroy in
+place, keep length) gives it ONE re-gate over sanitized arguments:
+
+```yaml
+tools:
+  - name: summarize
+    integrity: challenge-if-tainted
+    redact: strip       # auto-strip tainted segments; upstream never sees them
+```
+
+If the sanitized call clears every gated axis, it forwards — the upstream
+tool receives the redacted arguments and the receipt cites
+`redact:<mode>+<original rule>`. If it still fails (a paraphrased injection
+with no localizable segments, for example), the original decision stands.
+Capability-axis denials are never redactable.
+
+What gets sanitized: literal spans of matched block content, long-token
+spans from matched blocks, and classifier credential shapes. An ENCODED
+embedding (a decoded variant carries block content but no literal span
+exists) is withheld as a whole — it cannot be localized inside the encoding
+safely. Values that pass through untouched stay untouched.

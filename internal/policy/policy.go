@@ -74,6 +74,7 @@ type Tool struct {
 	Emits           string        `yaml:"emits"`         // tool-result|web|rag|file-read
 	EmitPathArg     string        `yaml:"emit_path_arg"` // for file-read: arg carrying the path
 	SinkClass       string        `yaml:"sink_class"`    // probe cache dimension; default = tool name
+	Redact          string        `yaml:"redact"`        // none|strip|mask — auto-sanitize tainted/high args where the re-gate clears (PRD §6 P1)
 }
 
 // CapDecl is one sensitivity-bearing capability (§5.2): a cap covers calls up
@@ -211,6 +212,12 @@ func Compile(f *File) (*Policy, error) {
 		if t.SinkClass == "" {
 			t.SinkClass = t.Name
 		}
+		if !labels.ValidRedactMode(labels.RedactMode(t.Redact)) {
+			return nil, fmt.Errorf("policy: tool %q bad redact %q (none|strip|mask)", t.Name, t.Redact)
+		}
+		if t.Redact == "" {
+			t.Redact = string(labels.RedactNone) // explicit default: empty must never act as "enabled"
+		}
 		p.Tools[t.Name] = &t
 	}
 
@@ -268,7 +275,8 @@ func (p *Policy) ToolFor(name string) *Tool {
 	if t, ok := p.Tools[name]; ok {
 		return t
 	}
-	return &Tool{Name: name, Integrity: ChallengeIfTainted, Confidentiality: ChallengeIfHigh, SinkClass: name}
+	return &Tool{Name: name, Integrity: ChallengeIfTainted, Confidentiality: ChallengeIfHigh, SinkClass: name,
+		Redact: string(labels.RedactNone)}
 }
 
 // NarrowCaps implements the manifest-narrowing rule (§5.2): the harness may
