@@ -78,7 +78,7 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 				// challenge/deny, never forward unsanitized arguments under a
 				// redact:* approval (round-32 finding).
 				full := ToolCallParams{Name: params.Name, Arguments: sanitized}
-				sb, mErr := json.Marshal(full)
+				fullJSON, mErr := json.Marshal(full)
 				if mErr != nil {
 					d.Reason = "sanitized arguments could not be encoded; keeping the original decision: " + mErr.Error()
 					d.Rule += "+redact:marshal-failed"
@@ -87,8 +87,13 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 					d = d2
 					d.Rule = "redact:" + string(mode) + "+" + origRule
 					d.Reason = "arguments auto-sanitized (" + string(mode) + "); re-gated clean on every axis; upstream receives the redacted arguments"
-					sanitizedArgs = sb
-					argsJSON = sb // the receipt HMACs what actually executes upstream
+					sanitizedArgs = fullJSON
+					// the receipt HMACs the ARGUMENTS MAP alone — the same
+					// canonical form every other receipt uses (round-33: the
+					// {name,arguments} wrapper made redacted digests
+					// inconsistent with the rest of the log)
+					ab, _ := json.Marshal(sanitized)
+					argsJSON = ab
 					// write the sanitized values back into the shared arguments
 					// map (in-process consumers see the sanitized view)
 					for k, v := range sanitized {
