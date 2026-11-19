@@ -143,7 +143,7 @@ func testEngine(t *testing.T) (*Engine, string) {
 	})
 }
 
-func testEngineWith(t *testing.T, f *policy.File) *Engine {
+func testEngineWith(t *testing.T, f *policy.File) (*Engine, string) {
 	t.Helper()
 	pol, err := policy.Compile(f)
 	if err != nil {
@@ -154,7 +154,7 @@ func testEngineWith(t *testing.T, f *policy.File) *Engine {
 	if err != nil {
 		t.Fatalf("receipts: %v", err)
 	}
-	return &Engine{
+	eng := &Engine{
 		Policy: pol,
 		// a mock set-probe judge: without one the gate fails closed on any
 		// call made while untrusted content sits in the shadow context
@@ -166,6 +166,7 @@ func testEngineWith(t *testing.T, f *policy.File) *Engine {
 		ReceiptKey:   []byte("test"),
 		ControlToken: []byte("ctl-test"),
 	}
+	return eng, rcpPath
 }
 
 type upPipe struct {
@@ -420,7 +421,7 @@ func TestHTTPPipeline(t *testing.T) {
 // an approval that resolves after the task token died (task end or TTL while
 // the challenge was pending) must not forward the call.
 func TestApprovalNeverOutlivesToken(t *testing.T) {
-	eng := testEngineWith(t, &policy.File{
+	eng, _ := testEngineWith(t, &policy.File{
 		Version:  1,
 		Defaults: policy.Defaults{TTL: policy.Dur(time.Hour), TTLCeiling: policy.Dur(4 * time.Hour)},
 		Tools: []policy.Tool{
