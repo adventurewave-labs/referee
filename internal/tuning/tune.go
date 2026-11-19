@@ -8,7 +8,6 @@ import (
 
 	"github.com/adventurewave-labs/referee/internal/caps"
 	"github.com/adventurewave-labs/referee/internal/gate"
-	"github.com/adventurewave-labs/referee/internal/labels"
 	"github.com/adventurewave-labs/referee/internal/policy"
 )
 
@@ -22,17 +21,23 @@ type Result struct {
 
 // Metrics is the §8 report card.
 type Metrics struct {
-	Total           int
-	TruePositives   int // injected, gated (challenge or deny)
-	FalseNegatives  int // injected, approved — a MISS (erodes value)
-	TrueNegatives   int // clean, approved
-	FalsePositives  int // clean, gated — a FALSE CHALLENGE (erodes trust)
-	Recall          float64
-	FalseChallenge  float64
-	Precision       float64
-	Pairs           int
-	PairsDiverged   int // pairs where clean approved AND injected gated (the ideal)
-	ProbeRan        int // cases decided at the probe layer (vs containment/classifier)
+	Total          int
+	TruePositives  int // injected, gated (challenge or deny)
+	FalseNegatives int // injected, approved — a MISS (erodes value)
+	TrueNegatives  int // clean, approved
+	FalsePositives int // clean, gated — a FALSE CHALLENGE (erodes trust)
+	Recall         float64
+	FalseChallenge float64
+	Precision      float64
+	Pairs          int
+	// PairsDiverged counts pairs where the clean half approved AND the
+	// injected half gated — the ideal pair, both halves behaving right.
+	PairsDiverged int
+	// ProbeDecided counts cases the probe decided TAINTED; ProbeCleared
+	// counts cases it decided CLEAN. A fail-closed probe error lands in
+	// ProbeDecided — flagged by Report because a broken judge inflates it.
+	ProbeDecided int
+	ProbeCleared int
 }
 
 // Tuner replays a corpus through a gate stack.
@@ -63,10 +68,14 @@ func (t *Tuner) TokenFor(pol *policy.Policy, class string) (*caps.Token, error) 
 // Run replays every case and scores the results.
 func (t *Tuner) Run(corpus *Corpus, pol *policy.Policy, token *caps.Token) []Result {
 	var out []Result
+	taskID := t.TaskID
+	if token != nil {
+		taskID = token.TaskID // evaluate under the minted token's identity
+	}
 	for _, cs := range corpus.Cases {
 		blocks := cs.ToBlocks()
-		d := t.Gate.Evaluate(gate.Input{TaskID: t.TaskID, Tool: cs.Tool, Args: cs.Args}, token, blocks)
-		layer := decideLayer(d, blocks, pol)
+		d := t.Gate.Evaluate(gate.Input{TaskID: taskID, Tool: cs.Tool, Args: cs.Args}, token, blocks)
+		layer := decideLayer(d)
 		pass := (cs.Expect == ExpectChallengeOrDeny && (d.Action == gate.Challenge || d.Action == gate.Deny)) ||
 			(cs.Expect == ExpectApprove && d.Action == gate.Approve)
 		out = append(out, Result{Case: cs, Decision: d, Pass: pass, Layer: layer})
@@ -75,13 +84,18 @@ func (t *Tuner) Run(corpus *Corpus, pol *policy.Policy, token *caps.Token) []Res
 }
 
 // decideLayer attributes which mechanism decided, evidence-only (never
-// decision-bearing, mirroring the probe's attribution rule).
-func decideLayer(d gate.Decision, blocks []labels.Block, pol *policy.Policy) string {
+// decision-bearing, mirroring the probe's attribution rule). Probe-layer
+// decisions split by verdict: tainted(probe) means the probe flagged the
+// call; not-detected(probe) means it cleared one — the gate, not the probe,
+// produced the approve.
+func decideLayer(d gate.Decision) string {
 	switch {
 	case strings.HasPrefix(d.Rule, "cap:"):
 		return "cap"
-	case strings.Contains(d.Integrity, "probe"):
-		return "probe"
+	case strings.Contains(d.Integrity, "tainted(probe)"):
+		return "probe(tainted)"
+	case strings.Contains(d.Integrity, "not-detected(probe)"):
+		return "probe(cleared)"
 	case strings.HasPrefix(d.Rule, "integrity:challenge-if-tainted+tainted"):
 		return "containment"
 	case strings.HasPrefix(d.Rule, "conf:"):
@@ -117,8 +131,27 @@ func Score(results []Result, corpus *Corpus) Metrics {
 		case exp == ExpectApprove && gated:
 			m.FalsePositives++
 		}
-		if r.Layer == "probe" {
-			m.ProbeRan++
+		switch {
+		case r.Layer == "probe(tainted)":
+			m.ProbeDecided++
+		case r.Layer == "probe(cleared)":
+			m.ProbeCleared++
+		}
+	}
+	// a pair diverged only when BOTH halves behaved right
+	cleanApproved := map[string]bool{}
+	injectedGated := map[string]bool{}
+	for _, r := range results {
+		switch {
+		case r.Case.Kind == "clean" && r.Decision.Action == gate.Approve:
+			cleanApproved[r.Case.Pair] = true
+		case r.Case.Kind == "injected" && (r.Decision.Action == gate.Challenge || r.Decision.Action == gate.Deny):
+			injectedGated[r.Case.Pair] = true
+		}
+	}
+	for p := range cleanApproved {
+		if injectedGated[p] {
+			m.PairsDiverged++
 		}
 	}
 	injected := m.TruePositives + m.FalseNegatives
@@ -132,9 +165,6 @@ func Score(results []Result, corpus *Corpus) Metrics {
 	denom := m.TruePositives + m.FalsePositives
 	if denom > 0 {
 		m.Precision = float64(m.TruePositives) / float64(denom)
-	}
-	for range pairOK {
-		m.PairsDiverged++
 	}
 	return m
 }
@@ -177,13 +207,15 @@ func Report(w io.Writer, results []Result, m Metrics, th Thresholds) {
 	fmt.Fprintln(w, strings.Repeat("─", 78))
 	fmt.Fprintf(w, "injected gated: %d/%d (recall %.2f, floor %.2f)\n", m.TruePositives, m.TruePositives+m.FalseNegatives, m.Recall, th.MinRecall)
 	fmt.Fprintf(w, "clean approved: %d/%d (false-challenge %.2f, ceiling %.2f)\n", m.TrueNegatives, m.TrueNegatives+m.FalsePositives, m.FalseChallenge, th.MaxFalseChallenge)
-	fmt.Fprintf(w, "precision %.2f · pairs %d (diverged %d) · probe-layer decisions %d/%d\n",
-		m.Precision, m.Pairs, m.PairsDiverged, m.ProbeRan, m.Total)
+	fmt.Fprintf(w, "precision %.2f · pairs %d (diverged %d) · probe decided %d, cleared %d of %d\n",
+		m.Precision, m.Pairs, m.PairsDiverged, m.ProbeDecided, m.ProbeCleared, m.Total)
+	fmt.Fprintln(w, "note: probe errors/timeout fail closed to tainted — a broken judge inflates ProbeDecided; tune with real judges")
 }
 
 func trunc(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }

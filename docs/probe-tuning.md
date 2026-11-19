@@ -22,6 +22,11 @@ layer that decided: `containment`, `probe`, `classifier`, or `cap`.
 
 ## Running
 
+Note: `--mock` scores against markers planted in the corpus — a CI smoke,
+not a measurement. Judge errors/timeout fail closed to tainted, so a broken
+judge inflates recall (`ProbeDecided`); the note line in the report flags it.
+Real tuning runs against real judges from the policy.
+
 ```bash
 # offline, deterministic mock judge (CI-friendly):
 referee tune --corpus examples/probe-corpus.yaml \

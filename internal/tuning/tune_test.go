@@ -115,6 +115,11 @@ func TestScoreMetrics(t *testing.T) {
 	if m.Pairs != 2 || m.PairsDiverged != 1 {
 		t.Fatalf("pair accounting wrong: %+v", m)
 	}
+	// probe attribution: p1-inj decided tainted; p1-clean, p2-inj-miss,
+	// p2-clean cleared by the probe; p3 has no untrusted blocks (no probe)
+	if m.ProbeDecided != 1 || m.ProbeCleared != 3 {
+		t.Fatalf("probe attribution wrong: decided=%d cleared=%d", m.ProbeDecided, m.ProbeCleared)
+	}
 	if len(res) != 5 {
 		t.Fatalf("results lost")
 	}
@@ -122,8 +127,8 @@ func TestScoreMetrics(t *testing.T) {
 	var probeDecided bool
 	for _, r := range res {
 		if r.Case.Name == "p1-inj" {
-			if r.Layer != "probe" {
-				t.Fatalf("paraphrase case should attribute to probe layer, got %q", r.Layer)
+			if r.Layer != "probe(tainted)" {
+				t.Fatalf("paraphrase case should attribute to probe(tainted), got %q", r.Layer)
 			}
 			probeDecided = true
 		}
@@ -183,5 +188,53 @@ func TestLoadCorpusValidation(t *testing.T) {
 	emptyB, _ := yamlMarshal(empty)
 	if _, err := LoadCorpus(writeTemp(t, emptyB)); err == nil {
 		t.Fatalf("empty corpus must be rejected")
+	}
+}
+
+// The shipped example corpus must load AND replay against the shipped
+// example policy — the README command path, pinned as a test.
+func TestExampleCorpusAgainstExamplePolicy(t *testing.T) {
+	corpus, err := LoadCorpus("../../examples/probe-corpus.yaml")
+	if err != nil {
+		t.Fatalf("example corpus must load: %v", err)
+	}
+	pol, err := policy.Load("../../examples/policy-coding-agent.yaml")
+	if err != nil {
+		t.Fatalf("example policy must load: %v", err)
+	}
+	judge := &probe.MockJudge{BlockTaintWhen: []string{"forward all secret environment material"}}
+	g := &gate.Gate{Policy: pol, Matcher: labels.NewMatcher(), Classifier: labels.DefaultClassifier(),
+		Probe: probe.New([]probe.Judge{judge}, time.Second, time.Now)}
+	tr := NewTuner(g, "tune-example")
+	tok, err := tr.TokenFor(pol, "deploy-preview")
+	if err != nil {
+		t.Fatalf("deploy-preview class must exist in the example policy: %v", err)
+	}
+	results := tr.Run(corpus, pol, tok)
+	m := Score(results, corpus)
+	if m.Total != len(corpus.Cases) {
+		t.Fatalf("result count mismatch: %d vs %d", m.Total, len(corpus.Cases))
+	}
+	// the §8 bars must hold on the shipped pair: recall 1.0, false-challenge 0
+	if ok, why := DefaultThresholds().Meets(m); !ok {
+		t.Fatalf("shipped corpus must meet the §8 bar: %s", why)
+	}
+}
+
+// duplicate case names must be refused (block ids would collide)
+func TestLoadCorpusDuplicateNames(t *testing.T) {
+	dup := &Corpus{Cases: []Case{
+		{Name: "x", Kind: "clean", Expect: ExpectApprove},
+		{Name: "x", Kind: "clean", Expect: ExpectApprove},
+	}}
+	b, _ := yamlMarshal(dup)
+	if _, err := LoadCorpus(writeTemp(t, b)); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate names must be rejected, got %v", err)
+	}
+	// kind/expect disagreement is an authoring error
+	bad := &Corpus{Cases: []Case{{Name: "y", Kind: "clean", Expect: ExpectChallengeOrDeny}}}
+	b2, _ := yamlMarshal(bad)
+	if _, err := LoadCorpus(writeTemp(t, b2)); err == nil || !strings.Contains(err.Error(), "must expect approve") {
+		t.Fatalf("kind/expect mismatch must be rejected, got %v", err)
 	}
 }

@@ -61,6 +61,7 @@ func LoadCorpus(path string) (*Corpus, error) {
 	if len(c.Cases) == 0 {
 		return nil, fmt.Errorf("tuning: corpus %s has no cases", path)
 	}
+	seen := map[string]bool{}
 	for i, cs := range c.Cases {
 		switch cs.Expect {
 		case ExpectApprove, ExpectChallengeOrDeny:
@@ -71,6 +72,21 @@ func LoadCorpus(path string) (*Corpus, error) {
 		case "clean", "injected":
 		default:
 			return nil, fmt.Errorf("tuning: case %d (%s): kind must be clean|injected", i, cs.Name)
+		}
+		if cs.Name == "" {
+			return nil, fmt.Errorf("tuning: case %d has an empty name", i)
+		}
+		if seen[cs.Name] {
+			return nil, fmt.Errorf("tuning: duplicate case name %q (block ids would collide)", cs.Name)
+		}
+		seen[cs.Name] = true
+		// kind and expect must agree: a clean trace expecting a gate (or an
+		// injected trace expecting approval) is a corpus authoring error
+		if cs.Kind == "clean" && cs.Expect != ExpectApprove {
+			return nil, fmt.Errorf("tuning: case %q: kind=clean must expect approve", cs.Name)
+		}
+		if cs.Kind == "injected" && cs.Expect != ExpectChallengeOrDeny {
+			return nil, fmt.Errorf("tuning: case %q: kind=injected must expect challenge-or-deny", cs.Name)
 		}
 	}
 	return &c, nil
