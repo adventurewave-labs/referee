@@ -111,3 +111,23 @@ func TestTTLDiesWithoutTaskEnd(t *testing.T) {
 		t.Errorf("expired token must be pruned/ignored: %+v", tok)
 	}
 }
+
+// round-13 P1-1: path scopes authorize the CANONICALIZED value only —
+// traversal outside the authorized directory must fail the pattern.
+func TestScopeTraversalDenied(t *testing.T) {
+	c := Cap{Tool: "write_file", ScopeArg: "path", Pattern: "/tmp/pr-42/**", Sensitivity: labels.SensNormal}
+	if c.Covers("write_file", "/tmp/pr-42/../../etc/passwd", labels.SensNormal) {
+		t.Fatalf("TRAVERSAL OUTSIDE THE SCOPE MATCHED THE PATTERN")
+	}
+	if c.Covers("write_file", "/tmp/pr-42/../other/file", labels.SensNormal) {
+		t.Fatalf("sibling traversal must be denied")
+	}
+	// traversal that canonicalizes back INSIDE the scope is fine
+	if !c.Covers("write_file", "/tmp/pr-42/./sub/../out.txt", labels.SensNormal) {
+		t.Errorf("in-scope traversal that canonicalizes inside must be allowed")
+	}
+	// windows-style separators canonicalize too
+	if c.Covers("write_file", "/tmp/pr-42\\..\\..\\etc\\passwd", labels.SensNormal) {
+		t.Fatalf("backslash traversal must be denied")
+	}
+}

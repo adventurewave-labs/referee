@@ -277,6 +277,7 @@ func SpawnUpstream(cmdline string) (io.ReadWriteCloser, *exec.Cmd, error) {
 		return nil, nil, fmt.Errorf("empty upstream command")
 	}
 	cmd := exec.Command(fields[0], fields[1:]...)
+	cmd.Env = UpstreamEnv(os.Environ())
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, nil, err
@@ -301,3 +302,24 @@ type pipeRWC struct {
 func (p *pipeRWC) Read(b []byte) (int, error)  { return p.r.Read(b) }
 func (p *pipeRWC) Write(x []byte) (int, error) { return p.w.Write(x) }
 func (p *pipeRWC) Close() error                { return p.w.Close() }
+
+// upstreamEnvAllowlist is the environment an upstream MCP server may see.
+// Referee is a choke point holding judge keys, dashboard tokens, and receipt
+// keys; upstream servers are untrusted (PRD §5.1) and inherit none of that
+// by default (round-13, P1-6).
+var upstreamEnvAllowlist = map[string]bool{
+	"PATH": true, "HOME": true, "USER": true, "LOGNAME": true,
+	"TMPDIR": true, "LANG": true, "TERM": true, "SHELL": true,
+}
+
+// UpstreamEnv builds the subprocess environment: the allowlist survives,
+// everything else (REF_* secrets especially) is dropped.
+func UpstreamEnv(inherited []string) []string {
+	var out []string
+	for _, kv := range inherited {
+		if i := strings.IndexByte(kv, '='); i > 0 && upstreamEnvAllowlist[kv[:i]] {
+			out = append(out, kv)
+		}
+	}
+	return out
+}

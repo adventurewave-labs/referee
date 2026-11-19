@@ -50,6 +50,17 @@ func Diff(a, b *Policy) string {
 			if ta.ProbeConsensus != tb.ProbeConsensus {
 				fmt.Fprintf(&sb, "tool %s: probe_consensus %t -> %t\n", n, ta.ProbeConsensus, tb.ProbeConsensus)
 			}
+			// labeling-relevant fields (round-13, P2-10): file-read ->
+			// tool-result changes how results are labeled
+			if ta.Emits != tb.Emits {
+				fmt.Fprintf(&sb, "tool %s: emits %s -> %s\n", n, ta.Emits, tb.Emits)
+			}
+			if ta.EmitPathArg != tb.EmitPathArg {
+				fmt.Fprintf(&sb, "tool %s: emit_path_arg %s -> %s\n", n, ta.EmitPathArg, tb.EmitPathArg)
+			}
+			if ta.SinkClass != tb.SinkClass {
+				fmt.Fprintf(&sb, "tool %s: sink_class %s -> %s\n", n, ta.SinkClass, tb.SinkClass)
+			}
 		}
 	}
 
@@ -89,6 +100,14 @@ func Diff(a, b *Policy) string {
 	}
 	if len(a.Judges) != len(b.Judges) {
 		fmt.Fprintf(&sb, "judges: %d -> %d\n", len(a.Judges), len(b.Judges))
+	}
+	// per-judge provider/model/endpoint moves where context is sent — count
+	// equality alone hides a swapped judge (round-13, P2-10)
+	for i := 0; i < len(a.Judges) && i < len(b.Judges); i++ {
+		ja, jb := a.Judges[i], b.Judges[i]
+		if ja.Provider != jb.Provider || ja.Model != jb.Model || ja.Endpoint != jb.Endpoint {
+			fmt.Fprintf(&sb, "judge %s: %s/%s@%s -> %s/%s@%s\n", ja.Name, ja.Provider, ja.Model, ja.Endpoint, jb.Provider, jb.Model, jb.Endpoint)
+		}
 	}
 
 	if sb.Len() == 0 {

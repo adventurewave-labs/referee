@@ -287,3 +287,38 @@ func mustRead(t *testing.T, path string) []byte {
 	}
 	return b
 }
+
+// round-13 P1-5: the hash encoding is unambiguous — delimiter characters
+// inside field values can no longer make two different entries share a hash
+// (and therefore a signed head).
+func TestDelimiterShiftTamperDetected(t *testing.T) {
+	logPath, _ := tempLog(t)
+	l, _ := Open(logPath, "", []byte("k"), nil, 100)
+	l.Append(Record{Task: "a", Tool: "b", Rule: "r", Decision: "deny", ArgsCanonical: "{}"})
+	entries, _ := ReadAll(logPath)
+
+	// craft the sibling entry whose old pipe-format hash would have collided
+	sibling := entries[0]
+	sibling.Task, sibling.Tool = "a|b", "c"
+	sibling.Seq = entries[0].Seq
+	sibling.PrevHash = entries[0].PrevHash
+	sibling.Hash = sibling.computeHash() // recompute under the current encoding
+	if sibling.Hash == entries[0].Hash {
+		t.Fatalf("length-prefixed encoding must separate (a,b,c) from (a|b,c) — the old pipe format made these identical")
+	}
+	// and a hand-forged entry with shifted delimiters fails chain verification
+	forged := []Entry{entries[0], {Seq: 2, TS: entries[0].TS, Task: "x|y", Tool: "z",
+		Rule: "r", Decision: "approve", Axis: "i", ArgsHMAC: entries[0].ArgsHMAC,
+		PrevHash: entries[0].Hash, Hash: entries[0].Hash}}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "forged.jsonl")
+	var buf strings.Builder
+	for _, e := range forged {
+		b, _ := json.Marshal(e)
+		buf.Write(append(b, '\n'))
+	}
+	os.WriteFile(p, []byte(buf.String()), 0o600)
+	if _, _, err := Verify(p, "", nil); err == nil {
+		t.Fatalf("delimiter-shifted forgery must fail verification")
+	}
+}

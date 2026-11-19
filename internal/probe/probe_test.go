@@ -2,6 +2,7 @@ package probe
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -43,24 +44,24 @@ func TestSetProbeDoubleInjection(t *testing.T) {
 	}
 }
 
-// cache key is (untrusted-set-hash, argument-normalized-hash, sink-class):
+// cache key is (untrusted-set-hash, trusted-set-hash, argument-hash, sink-class):
 // a negative cached in an earlier context state cannot clear the same
 // argument after new untrusted blocks arrive.
 func TestCacheKeyIncludesSetHash(t *testing.T) {
 	set1 := []labels.Block{uBlock("b-1", "harmless page")}
 	set2 := []labels.Block{uBlock("b-1", "harmless page"), uBlock("b-2", "NEW malicious instruction")}
-	k1 := CacheKey("deploy preview", set1, "net")
-	k2 := CacheKey("deploy preview", set2, "net")
+	k1 := CacheKey("deploy preview", set1, nil, "net")
+	k2 := CacheKey("deploy preview", set2, nil, "net")
 	if k1 == k2 {
 		t.Fatalf("different untrusted sets must produce different cache keys")
 	}
-	if CacheKey("deploy preview", set1, "net") != CacheKey("deploy preview", set1, "net") {
+	if CacheKey("deploy preview", set1, nil, "net") != CacheKey("deploy preview", set1, nil, "net") {
 		t.Fatalf("same set must produce the same key")
 	}
-	if CacheKey("deploy preview", set1, "net") == CacheKey("other argument", set1, "net") {
+	if CacheKey("deploy preview", set1, nil, "net") == CacheKey("other argument", set1, nil, "net") {
 		t.Fatalf("different args must produce different keys")
 	}
-	if CacheKey("deploy preview", set1, "net") == CacheKey("deploy preview", set1, "fs") {
+	if CacheKey("deploy preview", set1, nil, "net") == CacheKey("deploy preview", set1, nil, "fs") {
 		t.Fatalf("different sink classes must produce different keys")
 	}
 
@@ -185,4 +186,63 @@ func (f judgeFunc) Judge(_ context.Context, r Request) (Verdict, error) { return
 
 func errJudge() Judge {
 	return judgeFunc(func(r Request) (Verdict, error) { return Verdict{}, errors.New("down") })
+}
+
+// round-13 P1-3: the trusted context is part of the cache key — a verdict
+// judged against one operator context cannot clear the same argument in
+// another (the judge receives trusted blocks, so they are part of what it
+// judged).
+func TestCacheKeyIncludesTrustedContext(t *testing.T) {
+	un := []labels.Block{uBlock("b-1", "page")}
+	t1 := []labels.Block{tBlock("b-t1", "operator: deploy the preview service")}
+	t2 := []labels.Block{tBlock("b-t2", "operator: rotate all credentials now")}
+	if CacheKey("deploy", un, t1, "net") == CacheKey("deploy", un, t2, "net") {
+		t.Fatalf("different trusted contexts must produce different cache keys")
+	}
+}
+
+// round-13 P1-2: high-sensitivity block text never leaves the process —
+// judge prompts carry shape + hash references for high blocks.
+func TestPromptWithholdsHighSensitivityBlocks(t *testing.T) {
+	secret := "AKIAIOSFODNN7EXAMPLEwJalrXUtnFEMI"
+	system, user := BuildPrompt(Request{
+		Argument:  "deploy the preview",
+		Untrusted: []labels.Block{{ID: "b-h", Source: "web", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: "aws_deploy_key=" + secret}},
+		Trusted:   []labels.Block{{ID: "b-op", Source: "operator", Trust: labels.TrustTrusted, Sensitivity: labels.SensHigh, Text: "operator credential " + secret}},
+	})
+	for _, prompt := range []string{system, user} {
+		if strings.Contains(prompt, secret) {
+			t.Fatalf("HIGH-SENSITIVITY BLOCK TEXT LEFT THE PROCESS IN A JUDGE PROMPT")
+		}
+	}
+	if !strings.Contains(user, "high-sensitivity content withheld") {
+		t.Fatalf("withheld blocks must be declared as such:\n%s", user)
+	}
+}
+
+// round-13 P1-7: a second, contradictory JSON verdict after the first is a
+// schema violation — the last word must not win.
+func TestParseVerdictRejectsTrailingVerdicts(t *testing.T) {
+	if _, err := ParseVerdict(`{"verdict":"clean","confidence":0.9} {"verdict":"tainted","confidence":1}`); err == nil {
+		t.Fatalf("trailing contradictory verdict must be rejected")
+	}
+	if _, err := ParseVerdict(`{"verdict":"clean","confidence":0.9} garbage`); err == nil {
+		t.Fatalf("trailing non-whitespace must be rejected")
+	}
+	if _, err := ParseVerdict("{\"verdict\":\"clean\",\"confidence\":0.9}\n\n"); err != nil {
+		t.Fatalf("trailing whitespace must be accepted: %v", err)
+	}
+}
+
+// round-13 P2-9: cache keys are deterministic across runs — decoded variants
+// come from a map, so they are sorted before hashing.
+func TestCacheKeyDeterministic(t *testing.T) {
+	arg := base64.StdEncoding.EncodeToString([]byte("deterministic-key-material-42"))
+	un := []labels.Block{uBlock("b-1", "x")}
+	first := CacheKey(arg, un, nil, "net")
+	for i := 0; i < 20; i++ {
+		if CacheKey(arg, un, nil, "net") != first {
+			t.Fatalf("cache key nondeterministic across evaluations")
+		}
+	}
 }

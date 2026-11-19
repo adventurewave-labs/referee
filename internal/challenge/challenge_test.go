@@ -292,3 +292,22 @@ func TestRedactWithholdsUnrecognizedAndSecretishExcerpts(t *testing.T) {
 		t.Fatalf("withheld excerpt must say so: %q", r2.HostileExcerpts[0])
 	}
 }
+
+// round-13 P2-8: a single unsegmentable run longer than the window is
+// withheld, never raw-cut (the fallback cut could expose a secret prefix the
+// fragment classifier cannot see).
+func TestExcerptUnsegmentableWithheld(t *testing.T) {
+	classifier := labels.DefaultClassifier()
+	// 152 lowercase chars then the AWS secret: the raw-cut fragment matched
+	// neither the credential pattern nor the entropy threshold (codex #8)
+	text := strings.Repeat("a", 152) + secret
+	blocks := []labels.Block{
+		{ID: "b-web", Source: "web", Trust: labels.TrustUntrusted, Text: text},
+	}
+	red := Redact("send_email", map[string]any{"body": "r"}, blocks, classifier, []byte("rk"))
+	for _, h := range red.HostileExcerpts {
+		if strings.Contains(h, secret[:8]) {
+			t.Fatalf("PARTIAL SECRET SURVIVED THE FALLBACK CUT: %q", h)
+		}
+	}
+}

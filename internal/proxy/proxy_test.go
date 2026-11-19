@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -597,4 +598,59 @@ func firstNameInJSON(line string) string {
 		return ""
 	}
 	return rest[:k]
+}
+
+// round-13 P1-6: upstream subprocesses inherit an allowlisted environment —
+// REF_* secrets, dashboard tokens, and receipt keys never cross the boundary.
+func TestUpstreamEnvAllowlist(t *testing.T) {
+	env := UpstreamEnv([]string{
+		"PATH=/usr/bin", "HOME=/home/op", "REF_JUDGE_API_KEY=sk-secret",
+		"REF_RECEIPT_HMAC=deadbeef", "REF_DASHBOARD_TOKEN=tok", "TERM=xterm",
+	})
+	joined := strings.Join(env, "\n")
+	if strings.Contains(joined, "sk-secret") || strings.Contains(joined, "REF_") {
+		t.Fatalf("SECRETS LEAKED INTO UPSTREAM ENV: %q", joined)
+	}
+	for _, want := range []string{"PATH=/usr/bin", "HOME=/home/op", "TERM=xterm"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("allowlisted var %q missing", want)
+		}
+	}
+}
+
+type round13Judge func(probe.Request) (probe.Verdict, error)
+
+func (f round13Judge) Judge(_ context.Context, r probe.Request) (probe.Verdict, error) {
+	return f(r)
+}
+
+// round-13 P1-4: the gate blocks synchronously on the probe — a token that
+// dies DURING the probe must not let the call forward.
+func TestDenyWhenTokenDiesDuringProbe(t *testing.T) {
+	eng, _ := testEngine(t)
+	sess := NewSession("t", eng.Policy.Registry)
+	if err := eng.StartTask(sess, "t1", "ops", nil, ""); err != nil {
+		t.Fatalf("task start: %v", err)
+	}
+	// a judge that revokes the task while "deciding" — simulating TTL expiry
+	// during the synchronous probe
+	eng.Gate.Probe = probe.New([]probe.Judge{round13Judge(func(_ probe.Request) (probe.Verdict, error) {
+		eng.Caps.End("t1")
+		return probe.Verdict{Verdict: probe.Clean, Confidence: 0.9}, nil
+	})}, time.Second, time.Now)
+
+	// benign arg: containment misses, probe runs (untrusted content exists? —
+	// ingest a benign untrusted page first so the probe path is taken)
+	sess.IngestToolResult(eng.Policy.ToolFor("web.fetch"), "", "ordinary status page for the preview")
+	params := ToolCallParams{Name: "net.post", Arguments: map[string]any{"body": "deploy report for the preview"}}
+	result, forward, err := eng.HandleToolCall(sess, params)
+	if err != nil {
+		t.Fatalf("handle: %v", err)
+	}
+	if forward {
+		t.Fatalf("CALL FORWARDED AFTER TOKEN DIED DURING THE PROBE")
+	}
+	if !strings.Contains(result.Content[0].Text, "token-dead") && !strings.Contains(result.Content[0].Text, "denied") {
+		t.Fatalf("unexpected deny text: %q", result.Content[0].Text)
+	}
 }
