@@ -62,17 +62,14 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
 
 ## Not done
 
-- PR: open `funnel/referee` → `main` once the gate reaches APPROVED
-  (repo main currently holds only the bootstrap README). HUMANS MERGE.
-- Non-blocking reviewer items (tracked, not gate-blocking): HTTP session
-  map aliasing/data races; bash-glob cap scoping is advisory not a
-  boundary; dashboard approver identity is self-asserted; dashboard bearer
-  compare is not constant-time; challenge excerpt 160-byte truncation can
-  split a secret; challenge.Verified searches rules for challenge IDs that
-  never occur; ProbeConsensus flag unused; AGENTS.md review-lane grammar.
-- README license line says TBD — leave (repo stays private).
-- Optional: push `feat/mvp-v0.1` to origin (funnel/referee is the PR
-  branch; reconcile or drop feat/mvp-v0.1 at PR time).
+- Round-9 gate fixes are committed but UNVERIFIED remotely (this update rides
+  the fix commit; the next session verifies with `bash scripts/ci.sh`).
+- Deferred (reviewer non-blocking, tracked): unbounded anon-N HTTP sessions,
+  session-map aliasing on initialize (http.go), tuner Report counting
+  judge-failure taints separately.
+- PR not open yet: after the re-gate returns APPROVED,
+  `gh pr create -R adventurewave-labs/referee --base main --head funnel/referee`.
+  Humans merge; feat/mvp-v0.1 reconciles (delete) at merge time.
 
 ## Next
 
@@ -84,6 +81,14 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
 3. `handoff.sh done 2026-11-18-funnel-referee-r3.md --push --note "PR #N
    APPROVED, awaiting human merge"` to free the worker lane so
    funnel-tripwire-mvp and funnel-gauntlet-bootstrap dispatch.
+
+## Cockpit takeover (2026-11-18 ~17:00 CST)
+
+- Plane worker vmi3680747 died at 12:09 CST (last heartbeat); mp directed the
+  cockpit session to continue. Round-9 (round 9 overall): REVISE — challenge
+  payload leaked unredacted arg KEY names + undeclared tool names stored raw
+  in receipts. Fixed in cccb1d6 with regressions; mrkdwn escaping + doc
+  residuals folded in. Re-gate pending.
 
 ## Gate round 7 log (2026-11-18)
 
