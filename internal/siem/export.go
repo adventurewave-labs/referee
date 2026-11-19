@@ -20,14 +20,24 @@ import (
 	"github.com/adventurewave-labs/referee/internal/receipts"
 )
 
+// AnyValue is the OTLP AnyValue union; only the kvlistValue branch is used.
+type AnyValue struct {
+	KVList *KVList `json:"kvlistValue,omitempty"`
+}
+
+// KVList is an OTLP KeyValueList.
+type KVList struct {
+	Values []Attribute `json:"values"`
+}
+
 // Record is one OTLP log record in the JSON encoding of
 // ExportLogsServiceRequest (trace/type fields omitted — Referee receipts
 // carry no trace context).
 type Record struct {
-	TimeUnixNano  string            `json:"timeUnixNano"`
-	SeverityText  string            `json:"severityText"`
-	Body          any               `json:"body"`
-	Attributes    []Attribute       `json:"attributes"`
+	TimeUnixNano string      `json:"timeUnixNano"`
+	SeverityText string      `json:"severityText"`
+	Body         AnyValue    `json:"body"`
+	Attributes   []Attribute `json:"attributes"`
 }
 
 // Attribute is one OTLP key/value attribute.
@@ -57,7 +67,9 @@ func severity(decision string) string {
 }
 
 // ToOTLP converts one receipt entry into an OTLP log record. Receipts are
-// HMAC-only by design — the export never carries raw arguments (§5.4).
+// HMAC-only by design — the export never carries raw arguments (§5.4). The
+// body is a valid AnyValue: a kvlistValue of string values (a bare JSON
+// object is NOT a valid AnyValue encoding — round-38).
 func ToOTLP(e receipts.Entry) Record {
 	attrs := []Attribute{
 		strAttr("referee.seq", fmt.Sprint(e.Seq)),
@@ -77,12 +89,12 @@ func ToOTLP(e receipts.Entry) Record {
 	return Record{
 		TimeUnixNano: fmt.Sprint(e.TS.UnixNano()),
 		SeverityText: severity(e.Decision),
-		Body: map[string]string{
-			"event":    "referee.gate_decision",
-			"decision": e.Decision,
-			"tool":     e.Tool,
-			"rule":     e.Rule,
-		},
+		Body: AnyValue{KVList: &KVList{Values: []Attribute{
+			strAttr("event", "referee.gate_decision"),
+			strAttr("decision", e.Decision),
+			strAttr("tool", e.Tool),
+			strAttr("rule", e.Rule),
+		}}},
 		Attributes: attrs,
 	}
 }
@@ -158,6 +170,10 @@ type Tailer struct {
 	LogPath  string
 	Interval time.Duration
 	Report   func(err error) // failure reporter (logger); nil = silent
+	// MaxBatch caps records per POST (default 500): a huge backlog must
+	// drain in many bounded POSTs, never one request that outlives every
+	// client timeout and stalls export forever (round-38).
+	MaxBatch int
 }
 
 // Run blocks, shipping batches of new entries every Interval. Returns on
@@ -184,14 +200,23 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 			if len(entries) <= shipped {
 				continue
 			}
-			batch := entries[shipped:]
-			if err := t.Log.Ship(batch); err != nil {
-				if t.Report != nil {
-					t.Report(err)
-				}
-				continue // retry the same cursor next tick (best-effort)
+			max := t.MaxBatch
+			if max <= 0 {
+				max = 500
 			}
-			shipped = len(entries)
+			for shipped < len(entries) { // bounded chunks until caught up
+				end := shipped + max
+				if end > len(entries) {
+					end = len(entries)
+				}
+				if err := t.Log.Ship(entries[shipped:end]); err != nil {
+					if t.Report != nil {
+						t.Report(err)
+					}
+					break // retry the same cursor next tick (best-effort)
+				}
+				shipped = end
+			}
 		}
 	}
 }

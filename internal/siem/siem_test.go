@@ -101,7 +101,16 @@ func TestToOTLPPayload(t *testing.T) {
 							StringValue string `json:"stringValue"`
 						} `json:"value"`
 					} `json:"attributes"`
-					Body map[string]string `json:"body"`
+					Body struct {
+						KVList struct {
+							Values []struct {
+								Key   string `json:"key"`
+								Value struct {
+									StringValue string `json:"stringValue"`
+								} `json:"value"`
+							} `json:"values"`
+						} `json:"kvlistValue"`
+					} `json:"body"`
 				} `json:"logRecords"`
 			} `json:"scopeLogs"`
 		} `json:"resourceLogs"`
@@ -130,6 +139,19 @@ func TestToOTLPPayload(t *testing.T) {
 	}
 	if recs[0].TimeUnixNano == "" {
 		t.Fatalf("timeUnixNano missing")
+	}
+	// body is a VALID AnyValue kvlist (round-38)
+	if len(recs[0].Body.KVList.Values) == 0 {
+		t.Fatalf("body must be a kvlistValue AnyValue: %+v", recs[0].Body)
+	}
+	hasEvent := false
+	for _, kv := range recs[0].Body.KVList.Values {
+		if kv.Key == "event" && kv.Value.StringValue == "referee.gate_decision" {
+			hasEvent = true
+		}
+	}
+	if !hasEvent {
+		t.Fatalf("body kvlist missing event key")
 	}
 	attrs := map[string]string{}
 	for _, a := range recs[1].Attributes {
@@ -222,5 +244,71 @@ func TestTailerShipsNewEntriesOnly(t *testing.T) {
 func TestShipEmptyNoop(t *testing.T) {
 	if err := New("http://127.0.0.1:1", nil).Ship(nil); err != nil {
 		t.Fatalf("empty ship must be a no-op, got %v", err)
+	}
+}
+
+// round-38: a huge backlog drains in bounded POSTs — never one request that
+// outlives every client timeout.
+func TestTailerBoundedBatches(t *testing.T) {
+	logPath, l := tempLog(t)
+	const total = 25
+	for i := 0; i < total; i++ {
+		if _, _, err := l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "r", Decision: "approve", ArgsCanonical: "{}"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	var posts int
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		var p struct {
+			ResourceLogs []struct {
+				ScopeLogs []struct {
+					LogRecords []json.RawMessage `json:"logRecords"`
+				} `json:"scopeLogs"`
+			} `json:"resourceLogs"`
+		}
+		json.Unmarshal(b, &p)
+		mu.Lock()
+		posts++
+		got := len(p.ResourceLogs[0].ScopeLogs[0].LogRecords)
+		mu.Unlock()
+		if got > 10 {
+			t.Errorf("batch of %d exceeds the MaxBatch cap 10", got)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 25 * time.Millisecond,
+		MaxBatch: 10, Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		done_ := posts >= 3 // 25 records / 10 cap => 3 POSTs minimum
+		mu.Unlock()
+		if done_ {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	p := posts
+	mu.Unlock()
+	if p < 3 {
+		t.Fatalf("backlog never drained in bounded batches: %d posts", p)
+	}
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
 	}
 }
