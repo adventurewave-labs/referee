@@ -232,14 +232,10 @@ func Redact(tool string, args map[string]any, matched []labels.Block, classifier
 	m := labels.NewMatcher()
 	for _, k := range names {
 		// Keys are agent-controlled exactly like values: a secret planted in
-		// a KEY must not reach Slack either (round-9 finding). Same masking
-		// treatment applies to names.
-		name := k
-		if len(high) > 0 && len(m.Matches(k, high)) > 0 {
-			name = fullMask(k)
-		} else {
-			name = maskValue(k, classifier)
-		}
+		// a KEY must not reach Slack either (round-10 finding). Unlike values
+		// (shape-only since round 2), BENIGN keys stay readable — the
+		// approver needs them for triage; only secret-shaped keys are masked.
+		name := maskName(k, classifier, len(high) > 0 && len(m.Matches(k, high)) > 0)
 		v := fmt.Sprintf("%v", args[k])
 		shape := ""
 		if len(high) > 0 && len(m.Matches(v, high)) > 0 {
@@ -389,4 +385,13 @@ func (r Result) ReceiptFields(c Challenge) (decision, approver, rule string) {
 // against the receipt log.
 func Verified(logPath, challengeID string) ([]receipts.Entry, error) {
 	return receipts.Search(logPath, "", "", "", challengeID)
+}
+
+// maskName masks an argument KEY only when it is itself secret-shaped or
+// carries matched high-sensitivity block content; benign keys stay plain.
+func maskName(k string, classifier *labels.Classifier, highMatch bool) string {
+	if highMatch || classifier.LooksHigh(k) || looksSensitiveKey(k) {
+		return maskValue(k, classifier)
+	}
+	return k
 }
