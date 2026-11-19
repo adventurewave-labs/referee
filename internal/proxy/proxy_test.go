@@ -124,7 +124,7 @@ func (u *fakeUpstream) serve() {
 	}
 }
 
-func testEngine(t *testing.T) *Engine {
+func testEngine(t *testing.T) (*Engine, string) {
 	t.Helper()
 	return testEngineWith(t, &policy.File{
 		Version:  1,
@@ -185,7 +185,7 @@ func (p upPipe) Close() error {
 // injection-steered net.post (DENIED — require-trusted, never reaches
 // upstream) and a clean one (forwarded). task_end kills the token instantly.
 func TestStdioPipeline(t *testing.T) {
-	eng := testEngine(t)
+	eng, _ := testEngine(t)
 
 	agentR, agentW := io.Pipe() // agent -> proxy
 	p2uR, p2uW := io.Pipe()     // proxy -> upstream
@@ -275,8 +275,37 @@ func TestStdioPipeline(t *testing.T) {
 }
 
 // e2e over the HTTP transport: session header, deny path, approved passthrough.
+// round-9 regression: an undeclared tool's NAME is agent-controlled and
+// could BE the secret — receipts must store an HMAC reference, never the name.
+func TestReceiptUndeclaredToolNameMasked(t *testing.T) {
+	eng, logPath := testEngine(t)
+	secretName := "sk-proj-" + strings.Repeat("z", 30)
+	sess := NewSession("t", eng.Policy.Registry)
+	if err := eng.StartTask(sess, "t1", "ops", "", ""); err != nil {
+		t.Fatalf("task start: %v", err)
+	}
+	params := ToolCallParams{Name: secretName, Arguments: map[string]any{"x": "1"}}
+	result, forward, err := eng.HandleToolCall(sess, params)
+	if err != nil || forward {
+		t.Fatalf("undeclared tool must be denied (forward=%t err=%v)", forward, err)
+	}
+	if result.Content[0].Text == "" {
+		t.Fatalf("denied call must carry a reason")
+	}
+	entries, err := receipts.ReadAll(logPath)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("one receipt expected, got %d (%v)", len(entries), err)
+	}
+	if strings.Contains(entries[0].Tool, secretName) {
+		t.Fatalf("RAW UNDECLARED TOOL NAME IN RECEIPT: %q", entries[0].Tool)
+	}
+	if !strings.HasPrefix(entries[0].Tool, "undeclared:") {
+		t.Fatalf("undeclared tool must be recorded as undeclared:<hmac>, got %q", entries[0].Tool)
+	}
+}
+
 func TestHTTPPipeline(t *testing.T) {
-	eng := testEngine(t)
+	eng, _ := testEngine(t)
 	var upstreamToolCalls atomic.Int64
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

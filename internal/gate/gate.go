@@ -250,13 +250,6 @@ func rank(a string) int {
 	}
 }
 
-func axisStatus(high bool) string {
-	if high {
-		return "high"
-	}
-	return "normal"
-}
-
 func confReason(action string, high bool) string {
 	if action == Deny {
 		return "high-sensitivity content movement denied by require-normal"

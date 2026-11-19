@@ -60,8 +60,17 @@ written to be re-attacked by reviewers.
 3. **Missing task-end signal**: explicit-only v1 boundaries; a harness that
    never signals leaves caps alive until TTL. Visible in the dashboard.
 4. **Probe quality**: false challenges erode trust; misses erode value.
-   Conservative defaults ship; the paired-replay tuning harness is P1
-   (methodology per arXiv:2610.05840).
+   Conservative defaults ship; the paired-replay tuning harness ships with
+   `referee tune` (methodology per arXiv:2610.05840).
+5. **Unsigned receipt tail**: entries after the last signed batch head (up to
+   one batch, 99 at the default size) are protected by the unkeyed hash chain
+   only — someone who rewrites them AND recomputes hashes passes `referee
+   verify`. Signed heads bound the window; they do not close it. Batch size 1
+   signs every entry at throughput cost.
+6. **The receipt public key is not a trust anchor**: `referee-pubkey.hex`
+   (0644, working directory) sits next to the log it verifies — an attacker
+   who can rewrite the log and heads can also swap the key. Anchor trust by
+   keeping the public key elsewhere (keychain, offline copy, CI secret).
 
 ## What Referee does NOT protect
 

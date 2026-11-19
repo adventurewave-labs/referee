@@ -1,10 +1,13 @@
 package proxy
 
 import (
-	"sort"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 
 	"github.com/adventurewave-labs/referee/internal/caps"
 	"github.com/adventurewave-labs/referee/internal/challenge"
@@ -124,10 +127,17 @@ func (e *Engine) receipt(taskID string, params ToolCallParams, d gate.Decision, 
 	if e.Receipts == nil {
 		return nil
 	}
+	// Tool names are agent-controlled: an undeclared tool's name could BE the
+	// secret (an agent invents {"sk-live-...": "x"} as a tool name to exfil
+	// via the receipt log). Undeclared names are recorded HMAC-referenced only.
+	toolName := params.Name
+	if _, declared := e.Policy.Tools[params.Name]; !declared {
+		toolName = "undeclared:" + hex.EncodeToString(nameHMAC(e.ReceiptKey, params.Name))[:12]
+	}
 	axis := fmt.Sprintf("integrity=%s conf=%s", d.Integrity, d.Conf)
 	_, _, err := e.Receipts.Append(receipts.Record{
 		Task:          taskID,
-		Tool:          params.Name,
+		Tool:          toolName,
 		Rule:          d.Rule,
 		Decision:      d.Action,
 		Approver:      d.Approver,
@@ -315,4 +325,15 @@ func collectAllStrings(v any, depth int) []string {
 		return out
 	}
 	return nil
+}
+
+// nameHMAC is the keyed HMAC used for undeclared-tool name references in
+// receipts (same key family as challenge block refs).
+func nameHMAC(key []byte, name string) []byte {
+	if len(key) == 0 {
+		key = []byte("referee-unnamed")
+	}
+	m := hmac.New(sha256.New, key)
+	m.Write([]byte("tool-name|" + name))
+	return m.Sum(nil)
 }

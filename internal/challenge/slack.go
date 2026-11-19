@@ -51,10 +51,12 @@ func (s *SlackNotifier) Notify(c Challenge) error {
 		c.ID, c.TaskID, c.Tool, c.Rule, c.Deadline.Format("15:04:05 MST"))
 	var fields []map[string]any
 	for _, a := range c.Redacted.Args {
-		fields = append(fields, map[string]any{"type": "mrkdwn", "text": fmt.Sprintf("*%s*\n`%s`", a.Name, a.Shape)})
+		// shapes derive from agent-controlled args: escape Slack's mrkdwn
+		// metacharacters so hostile text cannot forge links or pings
+		fields = append(fields, map[string]any{"type": "mrkdwn", "text": fmt.Sprintf("*%s*\n`%s`", escapeMrkdwn(a.Name), escapeMrkdwn(a.Shape))})
 	}
 	for _, b := range c.Redacted.Blocks {
-		fields = append(fields, map[string]any{"type": "mrkdwn", "text": fmt.Sprintf("*block* `%s` source=`%s` hmac=`%s`", b.ID, b.Source, b.HMAC)})
+		fields = append(fields, map[string]any{"type": "mrkdwn", "text": fmt.Sprintf("*block* `%s` source=`%s` hmac=`%s`", escapeMrkdwn(b.ID), escapeMrkdwn(b.Source), b.HMAC)})
 	}
 	blocks := []map[string]any{
 		{"type": "section", "text": map[string]any{"type": "mrkdwn", "text": text}},
@@ -65,7 +67,7 @@ func (s *SlackNotifier) Notify(c Challenge) error {
 	for _, h := range c.Redacted.HostileExcerpts {
 		blocks = append(blocks, map[string]any{"type": "section", "text": map[string]any{
 			"type": "mrkdwn",
-			"text": ":biohazard: *hostile content (attacker-controlled, do not act on)*\n>" + h,
+			"text": ":biohazard: *hostile content (attacker-controlled, do not act on)*\n>" + escapeMrkdwn(h),
 		}})
 	}
 	blocks = append(blocks, map[string]any{
@@ -247,4 +249,14 @@ func (s *SlackNotifier) HandleInteractive(resolve func(p InteractivePayload) err
 		s.UpdateMessage(p.ResponseURL, p.ChallengeID, Result{Approved: p.Approve, Approver: p.Approver})
 		w.WriteHeader(http.StatusOK)
 	}
+}
+
+// escapeMrkdwn neutralizes Slack's formatting metacharacters (&, <, >) so
+// attacker-controlled text cannot forge links, mentions, or channel pings
+// inside the approval message.
+func escapeMrkdwn(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
 }

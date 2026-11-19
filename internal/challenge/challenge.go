@@ -231,6 +231,15 @@ func Redact(tool string, args map[string]any, matched []labels.Block, classifier
 	}
 	m := labels.NewMatcher()
 	for _, k := range names {
+		// Keys are agent-controlled exactly like values: a secret planted in
+		// a KEY must not reach Slack either (round-9 finding). Same masking
+		// treatment applies to names.
+		name := k
+		if len(high) > 0 && len(m.Matches(k, high)) > 0 {
+			name = fullMask(k)
+		} else {
+			name = maskValue(k, classifier)
+		}
 		v := fmt.Sprintf("%v", args[k])
 		shape := ""
 		if len(high) > 0 && len(m.Matches(v, high)) > 0 {
@@ -238,7 +247,7 @@ func Redact(tool string, args map[string]any, matched []labels.Block, classifier
 		} else {
 			shape = maskValue(v, classifier)
 		}
-		r.Args = append(r.Args, RedactedArg{Name: k, Shape: shape})
+		r.Args = append(r.Args, RedactedArg{Name: name, Shape: shape})
 	}
 	seen := map[string]bool{}
 	for _, b := range matched {

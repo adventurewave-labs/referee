@@ -153,6 +153,34 @@ func marshalForTest(r *Redacted) string {
 	return sb.String()
 }
 
+// round-9 regression: a secret planted in an argument KEY must be masked —
+// keys are agent-controlled and flow to Slack as *%s* fields.
+func TestRedactionMasksSecretKeyNames(t *testing.T) {
+	classifier := labels.DefaultClassifier()
+	args := map[string]any{
+		"aws_deploy_key=" + secret: "hi",
+		"normal_arg":               "fine",
+	}
+	blocks := []labels.Block{
+		{ID: "b-cred", Source: "file:/home/op/.secrets/aws", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: "aws_deploy_key=" + secret},
+	}
+	red := Redact("send_email", args, blocks, classifier, []byte("receipt-key"))
+	dump := marshalForTest(red)
+	if strings.Contains(dump, secret) {
+		t.Fatalf("SECRET IN ARG KEY LEAKED THROUGH REDACTION — §5.4 violated")
+	}
+	if !strings.Contains(dump, "normal_arg") {
+		t.Errorf("benign key names must survive for triage")
+	}
+	// even with no matched high block, a classifier-shaped key is masked
+	args2 := map[string]any{"sk-proj-" + strings.Repeat("x", 30): "v"}
+	red2 := Redact("send_email", args2, nil, classifier, []byte("receipt-key"))
+	dump2 := marshalForTest(red2)
+	if strings.Contains(dump2, strings.Repeat("x", 30)) {
+		t.Fatalf("classifier-shaped key leaked without any matched block")
+	}
+}
+
 // notify failure fails closed: the caller gets an error and the pending entry
 // is cleaned up.
 func TestNotifyFailureFailsClosed(t *testing.T) {
