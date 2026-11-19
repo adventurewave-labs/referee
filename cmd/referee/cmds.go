@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/adventurewave-labs/referee/internal/demo"
@@ -197,12 +196,17 @@ func cmdExport(args []string) error {
 	logPath := fs.String("log", "referee-receipts.jsonl", "receipt log path")
 	endpoint := fs.String("endpoint", "", "OTLP/HTTP base URL (required, e.g. http://siem:4318)")
 	seqStart := fs.Int("seq-start", 1, "first seq to export (1 = all)")
-	headerKV := fs.String("header", "", "extra header k=v (repeatable form not supported in v1; auth via env if needed)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *endpoint == "" {
 		return fmt.Errorf("export: --endpoint required")
+	}
+	// SIEM auth travels via env only — never argv (rig invariant; round-36:
+	// a --header k=v flag invited tokens into process listings)
+	var hdr map[string]string
+	if v := os.Getenv("REF_SIEM_AUTH"); v != "" {
+		hdr = map[string]string{"Authorization": v}
 	}
 	entries, err := receipts.ReadAll(*logPath)
 	if err != nil {
@@ -217,14 +221,6 @@ func cmdExport(args []string) error {
 	if len(batch) == 0 {
 		fmt.Println("export: nothing to ship at or after seq", *seqStart)
 		return nil
-	}
-	var hdr map[string]string
-	if *headerKV != "" {
-		parts := strings.SplitN(*headerKV, "=", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("export: --header wants k=v")
-		}
-		hdr = map[string]string{parts[0]: parts[1]}
 	}
 	if err := siem.New(*endpoint, hdr).Ship(batch); err != nil {
 		return err
