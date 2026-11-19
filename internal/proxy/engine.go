@@ -36,15 +36,19 @@ type Engine struct {
 }
 
 // HandleToolCall runs the §5.3 pipeline for one tools/call. It returns the
-// MCP result to hand the agent and whether the upstream server must be
-// called. Denied calls never reach upstream.
-func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallResult, bool, error) {
+// MCP result to hand the agent, the SANITIZED arguments as raw JSON (nil
+// when the arguments were not rewritten — transports must forward the
+// ORIGINAL request bytes then: re-decoding drops unknown fields and
+// perturbs large integers), whether the upstream server must be called,
+// and an error. Denied calls never reach upstream.
+func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallResult, json.RawMessage, bool, error) {
 	tool := e.Policy.ToolFor(params.Name)
 	taskID := sess.TaskID
 	token := e.Caps.Get(taskID)
 	blocks := sess.Snapshot()
 
 	argsJSON, _ := json.Marshal(params.Arguments)
+	effective := json.RawMessage(nil) // what the transport must forward upstream
 	d := e.Gate.Evaluate(gate.Input{TaskID: sess.TaskID, Tool: params.Name, Args: params.Arguments}, token, blocks)
 
 	// Redaction path (PRD §6 P1): where policy allows (tool redact:
@@ -64,6 +68,7 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 		(d.Action == gate.Challenge || d.Action == gate.Deny) &&
 		(strings.Contains(d.Rule, "tainted") || strings.HasPrefix(d.Rule, "conf:")) {
 		matched := blocksForIDs(blocks, d.BlockIDs)
+		var sanitizedArgs json.RawMessage // non-nil ONLY when redaction rewrote the args
 		if sanitized, changed := sanitizeArgs(params.Arguments, matched, mode, e.Gate.Classifier); changed {
 			d2 := e.Gate.Evaluate(gate.Input{TaskID: sess.TaskID, Tool: params.Name, Args: sanitized}, token, blocks)
 			if d2.Action == gate.Approve {
@@ -71,13 +76,21 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 				d = d2
 				d.Rule = "redact:" + string(mode) + "+" + origRule
 				d.Reason = "arguments auto-sanitized (" + string(mode) + "); re-gated clean on every axis; upstream receives the redacted arguments"
-				argsJSON, _ = json.Marshal(sanitized)
+				// the transport forwards FULL tool-call params: name stays,
+				// arguments are the sanitized ones
+				full := ToolCallParams{Name: params.Name, Arguments: sanitized}
+				sb, _ := json.Marshal(full)
+				sanitizedArgs = sb
+				argsJSON = sb // the receipt HMACs what actually executes upstream
 				// write the sanitized values back into the shared arguments
-				// map: the caller's params IS the map the upstream call sends
+				// map (in-process consumers see the sanitized view)
 				for k, v := range sanitized {
 					params.Arguments[k] = v
 				}
 			}
+		}
+		if sanitizedArgs != nil {
+			effective = sanitizedArgs
 		}
 	}
 
@@ -128,17 +141,17 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 		if e.Log != nil {
 			e.Log.Printf("receipts: append failed, denying %s: %v", params.Name, err)
 		}
-		return DenyResult(gate.Deny, "receipt:write-failed", "the decision receipt could not be written; denying (fail closed)"), false, nil
+		return DenyResult(gate.Deny, "receipt:write-failed", "the decision receipt could not be written; denying (fail closed)"), nil, false, nil
 	}
 
 	switch d.Action {
 	case gate.Approve:
-		return ToolCallResult{}, true, nil
+		return ToolCallResult{}, effective, true, nil
 	case gate.Challenge:
 		// challenge approved: forward (grant is task-scoped and dies with the token)
-		return ToolCallResult{}, true, nil
+		return ToolCallResult{}, effective, true, nil
 	default:
-		return DenyResult(d.Action, d.Rule, d.Reason), false, nil
+		return DenyResult(d.Action, d.Rule, d.Reason), nil, false, nil
 	}
 }
 

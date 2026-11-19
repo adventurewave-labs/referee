@@ -130,7 +130,7 @@ func RunStdioSession(e *Engine, sess *Session, r io.Reader, w io.Writer, upstrea
 				continue
 			}
 			req.Params = canonical
-			result, forward, err := e.HandleToolCall(sess, params)
+			result, effective, forward, err := e.HandleToolCall(sess, params)
 			if err != nil {
 				if err := respondErr(req.ID, CodeInternalError, err.Error()); err != nil {
 					return err
@@ -144,19 +144,16 @@ func RunStdioSession(e *Engine, sess *Session, r io.Reader, w io.Writer, upstrea
 				continue
 			}
 			// approved: forward upstream, capture the result into the shadow
-			// context, then relay the response verbatim. The forwarded call
-			// carries the EFFECTIVE arguments — the engine may have sanitized
-			// them in place (redaction path), and the wire must match what
-			// the gate approved (round-24 finding).
-			effParams, mErr := json.Marshal(params)
-			if mErr != nil {
-				if err := respondErr(req.ID, CodeInternalError, "forward marshal failed"); err != nil {
-					return err
-				}
-				continue
+			// context, then relay the response verbatim. The canonical params
+			// from round-4 stay on the wire UNLESS redaction rewrote the
+			// arguments — only then does effective.Params replace them
+			// (round-29: re-decoding original bytes would be lossy, but a
+			// full re-marshal of unchanged args is never needed).
+			upReq := req
+			if effective != nil {
+				upReq = Request{JSONRPC: req.JSONRPC, ID: req.ID, Method: req.Method, Params: effective}
 			}
-			effReq := Request{JSONRPC: req.JSONRPC, ID: req.ID, Method: req.Method, Params: effParams}
-			upResp, err := roundTrip(upstream, upIn, effReq)
+			upResp, err := roundTrip(upstream, upIn, upReq)
 			if err != nil {
 				if err := respondErr(req.ID, CodeInternalError, "upstream call failed: "+err.Error()); err != nil {
 					return err
