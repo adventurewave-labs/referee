@@ -166,8 +166,10 @@ func (g *Gate) Evaluate(in Input, token *caps.Token, blocks []labels.Block) Deci
 	switch {
 	case integrityVerb == policy.TrustAny:
 		d.Integrity = "pass-any"
+	case tainted && probeRan:
+		d.Integrity = "tainted(probe)" // probe-decided taint (evidence attribution)
 	case tainted:
-		d.Integrity = "tainted"
+		d.Integrity = "tainted" // containment-decided taint
 	default:
 		if probeRan {
 			d.Integrity = "not-detected(probe)"
