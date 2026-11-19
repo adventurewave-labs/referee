@@ -504,7 +504,7 @@ func TestUpstreamPayloadsIngestUntrusted(t *testing.T) {
 // re-serialization must drop the duplicates: upstream sees exactly the
 // name the gate evaluated.
 func TestDuplicateNameKeysForwardCanonical(t *testing.T) {
-	eng := testEngine(t)
+	eng, _ := testEngine(t)
 
 	agentR, agentW := io.Pipe()
 	p2uR, p2uW := io.Pipe()
