@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/adventurewave-labs/referee/internal/demo"
 	"github.com/adventurewave-labs/referee/internal/keys"
 	"github.com/adventurewave-labs/referee/internal/policy"
 	"github.com/adventurewave-labs/referee/internal/receipts"
+	"github.com/adventurewave-labs/referee/internal/siem"
 )
 
 func cmdVerify(args []string) error {
@@ -185,4 +187,48 @@ func cmdApprove(args []string) error {
 
 func runDemo(w *os.File) error {
 	return demo.Run(w)
+}
+
+// cmdExport ships receipt-log entries to an OTLP/HTTP SIEM endpoint
+// (PRD §6 P1). One-shot: entries from --seq-start (default all) ship once;
+// use serve --siem-endpoint for continuous tailing.
+func cmdExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	logPath := fs.String("log", "referee-receipts.jsonl", "receipt log path")
+	endpoint := fs.String("endpoint", "", "OTLP/HTTP base URL (required, e.g. http://siem:4318)")
+	seqStart := fs.Int("seq-start", 1, "first seq to export (1 = all)")
+	headerKV := fs.String("header", "", "extra header k=v (repeatable form not supported in v1; auth via env if needed)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *endpoint == "" {
+		return fmt.Errorf("export: --endpoint required")
+	}
+	entries, err := receipts.ReadAll(*logPath)
+	if err != nil {
+		return err
+	}
+	var batch []receipts.Entry
+	for _, e := range entries {
+		if int(e.Seq) >= *seqStart {
+			batch = append(batch, e)
+		}
+	}
+	if len(batch) == 0 {
+		fmt.Println("export: nothing to ship at or after seq", *seqStart)
+		return nil
+	}
+	var hdr map[string]string
+	if *headerKV != "" {
+		parts := strings.SplitN(*headerKV, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("export: --header wants k=v")
+		}
+		hdr = map[string]string{parts[0]: parts[1]}
+	}
+	if err := siem.New(*endpoint, hdr).Ship(batch); err != nil {
+		return err
+	}
+	fmt.Printf("export: shipped %d entries (seq %d..%d) to %s\n", len(batch), batch[0].Seq, batch[len(batch)-1].Seq, *endpoint)
+	return nil
 }

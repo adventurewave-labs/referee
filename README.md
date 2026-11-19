@@ -72,14 +72,15 @@ which policy clause fired — args are keyed-HMAC'd, never stored raw.
 | `internal/proxy` | §7 | MCP middleware (stdio + streamable-HTTP JSON mode), per-session shadow context |
 | `internal/dashboard` | §6 | in-binary operator surface (sessions, decisions, verify, local approver) |
 | `internal/tuning` | §6 P1 / §8 | paired-replay probe tuning: corpus loader, full-gate replay, recall/false-challenge metrics |
+| `internal/siem` | §6 P1 | OTLP/HTTP receipt export: severity-mapped log records, best-effort tailer (log on disk stays source of truth) |
 | `cmd/referee` | — | CLI: serve / verify / why / policy / demo / approve |
 
 ## Status
 
-v0.1 (first working scaffold) — P0 scope, plus the P1 probe-tuning loop
-(`referee tune`, paired-replay corpus) and the P1 redaction path
-(`redact: strip|mask` — auto-sanitize + re-gate). Remaining P1: SIEM export
-(OTLP), framework presets. Known limitations are documented honestly in
+v0.1 — P0 scope complete, plus P1: probe-tuning loop (`referee tune`),
+redaction path (`redact: strip|mask`), SIEM export (`referee export` /
+`serve --siem-endpoint`, OTLP/HTTP), framework presets
+([docs/frameworks.md](docs/frameworks.md)). Known limitations are documented honestly in
 [docs/threat-model.md](docs/threat-model.md) (§11 residual risks: transformed
 secrets that defeat all normalizations, classifier misses, missing task-end
 signals bounded by TTL).
