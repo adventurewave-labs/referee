@@ -72,6 +72,7 @@ func Run(w io.Writer) error {
 	prb := probe.New([]probe.Judge{judge}, 2*time.Second, time.Now)
 	g := &gate.Gate{Policy: pol, Matcher: labels.NewMatcher(), Classifier: labels.DefaultClassifier(), Probe: prb}
 	hmacKey := []byte("demo-args-hmac-key")
+prb.WithholdKey = hmacKey
 	dir, err := os.MkdirTemp("", "referee-demo-*")
 	if err != nil {
 		return err

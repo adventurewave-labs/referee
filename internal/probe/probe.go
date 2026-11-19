@@ -10,6 +10,7 @@ package probe
 
 import (
 	"context"
+	"crypto/hmac"
 	"io"
 	"crypto/sha256"
 	"encoding/hex"
@@ -43,9 +44,10 @@ type Judge interface {
 
 // Request is one set-based question.
 type Request struct {
-	Argument  string
-	Trusted   []labels.Block
-	Untrusted []labels.Block
+	Argument    string
+	Trusted     []labels.Block
+	Untrusted   []labels.Block
+	WithholdKey []byte // keys HMAC refs for withheld high-sensitivity content
 }
 
 // excerpt bounds block text fed to the judge.
@@ -55,7 +57,12 @@ const excerpt = 600
 type Probe struct {
 	Judges  []Judge
 	Timeout time.Duration
-	now     func() time.Time
+	// WithholdKey keys the HMAC references for withheld high-sensitivity
+	// content in judge prompts. Unkeyed hashes let an offline guesser CONFIRM
+	// a guessed secret (length + digest prefix = confirmation oracle), so the
+	// reference must be keyed by the deployment's receipt key (round-16).
+	WithholdKey []byte
+	now         func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]cacheEntry
@@ -107,7 +114,12 @@ func (p *Probe) Check(parent context.Context, argument string, untrusted, truste
 
 	ctx, cancel := context.WithTimeout(parent, p.Timeout)
 	defer cancel()
-	v := p.consensus(ctx, argument, untrusted, trusted)
+	v := p.consensus(ctx, Request{
+		Argument:    argument,
+		Untrusted:   untrusted,
+		Trusted:     trusted,
+		WithholdKey: p.WithholdKey,
+	})
 
 	// A tainted verdict must never be cached in a way that outlives the
 	// context state it was computed for — the set-hash is already part of the
@@ -121,12 +133,12 @@ func (p *Probe) Check(parent context.Context, argument string, untrusted, truste
 
 // consensus runs one judge normally, two judges in consensus mode. Error,
 // timeout, or disagreement = tainted.
-func (p *Probe) consensus(ctx context.Context, argument string, untrusted, trusted []labels.Block) Verdict {
+func (p *Probe) consensus(ctx context.Context, req Request) Verdict {
 	if len(p.Judges) == 0 {
 		return Verdict{Verdict: Tainted, Confidence: 0} // no judge configured: fail closed
 	}
 	if len(p.Judges) == 1 {
-		return failClosed(p.Judges[0].Judge(ctx, Request{Argument: argument, Untrusted: untrusted, Trusted: trusted}))
+		return failClosed(p.Judges[0].Judge(ctx, req))
 	}
 	var (
 		wg   sync.WaitGroup
@@ -137,7 +149,7 @@ func (p *Probe) consensus(ctx context.Context, argument string, untrusted, trust
 		wg.Add(1)
 		go func(j Judge) {
 			defer wg.Done()
-			v := failClosed(j.Judge(ctx, Request{Argument: argument, Untrusted: untrusted, Trusted: trusted}))
+			v := failClosed(j.Judge(ctx, req))
 			mu.Lock()
 			outs = append(outs, v)
 			mu.Unlock()
@@ -216,10 +228,10 @@ func BuildPrompt(r Request) (system, user string) {
 	// probe must not become an exfiltration channel to an external judge).
 	var tb, ub strings.Builder
 	for _, b := range r.Trusted {
-		fmt.Fprintf(&tb, "[%s source=%s] %s\n", b.ID, b.Source, blockForPrompt(b))
+		fmt.Fprintf(&tb, "[%s source=%s] %s\n", b.ID, b.Source, blockForPrompt(b, r.WithholdKey))
 	}
 	for _, b := range r.Untrusted {
-		fmt.Fprintf(&ub, "[%s source=%s] %s\n", b.ID, b.Source, blockForPrompt(b))
+		fmt.Fprintf(&ub, "[%s source=%s] %s\n", b.ID, b.Source, blockForPrompt(b, r.WithholdKey))
 	}
 	user = fmt.Sprintf("TRUSTED BLOCKS (%d):\n%s\nUNTRUSTED BLOCKS (%d):\n%s\nARGUMENT:\n%s",
 		len(r.Trusted), tb.String(), len(r.Untrusted), ub.String(), r.Argument)
@@ -299,11 +311,19 @@ func ParseVerdict(raw string) (Verdict, error) {
 }
 
 // blockForPrompt renders block content for the judge — high-sensitivity
-// blocks are withheld (shape + short hash only).
-func blockForPrompt(b labels.Block) string {
+// blocks are withheld: length survives (operator triage), the reference is a
+// KEYED HMAC (an unkeyed digest prefix would confirm offline guesses of
+// low-entropy secrets), and with no key configured nothing digest-shaped is
+// emitted at all.
+func blockForPrompt(b labels.Block, withholdKey []byte) string {
 	if b.High() {
-		sum := sha256.Sum256([]byte(b.Text))
-		return "[high-sensitivity content withheld, len=" + fmt.Sprint(len(b.Text)) + " sha=" + hex.EncodeToString(sum[:])[:12] + "]"
+		ref := ""
+		if len(withholdKey) > 0 {
+			m := hmac.New(sha256.New, withholdKey)
+			m.Write([]byte(b.Text))
+			ref = " mac=" + hex.EncodeToString(m.Sum(nil))[:12]
+		}
+		return "[high-sensitivity content withheld, len=" + fmt.Sprint(len(b.Text)) + ref + "]"
 	}
 	return clip(b.Text, excerpt)
 }

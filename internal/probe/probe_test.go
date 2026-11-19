@@ -205,18 +205,31 @@ func TestCacheKeyIncludesTrustedContext(t *testing.T) {
 // judge prompts carry shape + hash references for high blocks.
 func TestPromptWithholdsHighSensitivityBlocks(t *testing.T) {
 	secret := "AKIAIOSFODNN7EXAMPLEwJalrXUtnFEMI"
-	system, user := BuildPrompt(Request{
-		Argument:  "deploy the preview",
-		Untrusted: []labels.Block{{ID: "b-h", Source: "web", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: "aws_deploy_key=" + secret}},
-		Trusted:   []labels.Block{{ID: "b-op", Source: "operator", Trust: labels.TrustTrusted, Sensitivity: labels.SensHigh, Text: "operator credential " + secret}},
-	})
+	req := Request{
+		Argument:    "deploy the preview",
+		WithholdKey: []byte("receipt-key"),
+		Untrusted:   []labels.Block{{ID: "b-h", Source: "web", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: "aws_deploy_key=" + secret}},
+		Trusted:     []labels.Block{{ID: "b-op", Source: "operator", Trust: labels.TrustTrusted, Sensitivity: labels.SensHigh, Text: "operator credential " + secret}},
+	}
+	system, user := BuildPrompt(req)
 	for _, prompt := range []string{system, user} {
 		if strings.Contains(prompt, secret) {
 			t.Fatalf("HIGH-SENSITIVITY BLOCK TEXT LEFT THE PROCESS IN A JUDGE PROMPT")
 		}
 	}
-	if !strings.Contains(user, "high-sensitivity content withheld") {
-		t.Fatalf("withheld blocks must be declared as such:\n%s", user)
+	// the reference must be KEYED: an unkeyed digest prefix confirms offline
+	// guesses of low-entropy secrets (round-16)
+	if strings.Contains(user, "sha=") {
+		t.Fatalf("withheld references must be keyed, not plain digests:\n%s", user)
+	}
+	if !strings.Contains(user, "mac=") {
+		t.Fatalf("withheld blocks must carry a keyed mac reference:\n%s", user)
+	}
+	// no key configured: nothing digest-shaped is emitted at all
+	_, user2 := BuildPrompt(Request{Argument: "x", WithholdKey: nil,
+		Untrusted: []labels.Block{{ID: "b-h", Source: "web", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: secret}}})
+	if strings.Contains(user2, "sha=") || strings.Contains(user2, secret) {
+		t.Fatalf("unkeyed prompt emitted digest-shaped references:\n%s", user2)
 	}
 }
 
