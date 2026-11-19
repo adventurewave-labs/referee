@@ -72,20 +72,28 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 		if sanitized, changed := sanitizeArgs(params.Arguments, matched, mode, e.Gate.Classifier); changed {
 			d2 := e.Gate.Evaluate(gate.Input{TaskID: sess.TaskID, Tool: params.Name, Args: sanitized}, token, blocks)
 			if d2.Action == gate.Approve {
-				origRule := d.Rule
-				d = d2
-				d.Rule = "redact:" + string(mode) + "+" + origRule
-				d.Reason = "arguments auto-sanitized (" + string(mode) + "); re-gated clean on every axis; upstream receives the redacted arguments"
 				// the transport forwards FULL tool-call params: name stays,
-				// arguments are the sanitized ones
+				// arguments are the sanitized ones. Marshal BEFORE switching
+				// the decision — a marshal failure must keep the original
+				// challenge/deny, never forward unsanitized arguments under a
+				// redact:* approval (round-32 finding).
 				full := ToolCallParams{Name: params.Name, Arguments: sanitized}
-				sb, _ := json.Marshal(full)
-				sanitizedArgs = sb
-				argsJSON = sb // the receipt HMACs what actually executes upstream
-				// write the sanitized values back into the shared arguments
-				// map (in-process consumers see the sanitized view)
-				for k, v := range sanitized {
-					params.Arguments[k] = v
+				sb, mErr := json.Marshal(full)
+				if mErr != nil {
+					d.Reason = "sanitized arguments could not be encoded; keeping the original decision: " + mErr.Error()
+					d.Rule += "+redact:marshal-failed"
+				} else {
+					origRule := d.Rule
+					d = d2
+					d.Rule = "redact:" + string(mode) + "+" + origRule
+					d.Reason = "arguments auto-sanitized (" + string(mode) + "); re-gated clean on every axis; upstream receives the redacted arguments"
+					sanitizedArgs = sb
+					argsJSON = sb // the receipt HMACs what actually executes upstream
+					// write the sanitized values back into the shared arguments
+					// map (in-process consumers see the sanitized view)
+					for k, v := range sanitized {
+						params.Arguments[k] = v
+					}
 				}
 			}
 		}
