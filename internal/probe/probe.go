@@ -86,6 +86,17 @@ func (p *Probe) Check(parent context.Context, argument string, untrusted, truste
 	if len(untrusted) == 0 {
 		return Verdict{Verdict: Clean, Confidence: 1}
 	}
+	// Fail closed on withheld content: high-sensitivity blocks are withheld
+	// from the judge (confidentiality), so the judge cannot honestly assess
+	// influence that derives from them. Any high-labeled untrusted block in
+	// the set means the probe must NOT clear the argument — the integrity
+	// axis fails closed and the gate denies or challenges (round-14).
+	for _, b := range untrusted {
+		if b.High() {
+			return Verdict{Verdict: Tainted, Confidence: 0}
+		}
+	}
+
 	key := CacheKey(argument, untrusted, trusted, sinkClass)
 	p.mu.Lock()
 	if ce, ok := p.cache[key]; ok && p.now().Before(ce.expires) {

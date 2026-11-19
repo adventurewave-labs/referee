@@ -89,6 +89,17 @@ Properties (all asserted by tests):
 "No taint detected" means containment + (if applicable) the set-probe
 cleared it. Receipts phrase it as **not detected**, never as *clean*.
 
+## High-labeled untrusted content fails the probe closed
+
+High-sensitivity block text is withheld from judge prompts (the probe must
+never become an exfiltration channel to an external judge). Consequence: the
+judge cannot honestly assess influence that derives from withheld content,
+so **any high-labeled UNTRUSTED block in the set fails the probe closed** —
+the integrity axis denies or challenges rather than auto-approve. Operators
+who intend an agent to read a secrets path label it `trust: trusted,
+sensitivity: high` (the PRD §5.1 operator-credential case): exfiltration
+still gates on the confidentiality axis, and the probe stays unblinded.
+
 ## Argument classification (confidentiality)
 
 When propagation was silent, the argument class decides sensitivity: a

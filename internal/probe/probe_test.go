@@ -246,3 +246,16 @@ func TestCacheKeyDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// round-14: high-labeled UNTRUSTED blocks are withheld from the judge, so
+// the probe cannot honestly clear an argument influenced by them — it fails
+// closed to tainted even when the judge would say clean.
+func TestProbeFailsClosedOnHighUntrustedBlocks(t *testing.T) {
+	secret := "AKIAIOSFODNN7EXAMPLEwJalrXUtnFEMI"
+	un := []labels.Block{{ID: "b-h", Source: "web", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: "aws_deploy_key=" + secret}}
+	judge := &MockJudge{} // would answer clean — the probe must not believe it
+	p := New([]Judge{judge}, time.Second, time.Now)
+	if v := p.Check(nil, "totally innocent deploy report", un, nil, "net"); v.Verdict != Tainted {
+		t.Fatalf("high-labeled untrusted block must fail the probe closed, got %v", v)
+	}
+}
