@@ -28,10 +28,6 @@ constitution (`~/rig/AGENTS.md`). Repo invariants the review gate anchors on:
 - The containment-path budget (<5ms/call) is asserted in
   `internal/gate/gate_test.go:TestContainmentLatencyBudget` — keep it.
 
-## Review lane
-
-- Deterministic checks only; verdict line protocol per rig Law 2.
-
 ## Conventions
 
 - Go stdlib first; the only direct dependency is `gopkg.in/yaml.v3`.

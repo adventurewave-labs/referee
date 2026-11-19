@@ -282,7 +282,7 @@ func TestReceiptUndeclaredToolNameMasked(t *testing.T) {
 	eng, logPath := testEngine(t)
 	secretName := "sk-proj-" + strings.Repeat("z", 30)
 	sess := NewSession("t", eng.Policy.Registry)
-	if err := eng.StartTask(sess, "t1", "ops", "", ""); err != nil {
+	if err := eng.StartTask(sess, "t1", "ops", nil, ""); err != nil {
 		t.Fatalf("task start: %v", err)
 	}
 	params := ToolCallParams{Name: secretName, Arguments: map[string]any{"x": "1"}}
