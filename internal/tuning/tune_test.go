@@ -160,7 +160,7 @@ func TestReportSmoke(t *testing.T) {
 	var buf bytes.Buffer
 	Report(&buf, res, m, DefaultThresholds())
 	out := buf.String()
-	if !strings.Contains(out, "recall") || !strings.Contains(out, "false-challenge") || !strings.Contains(out, "probe-layer") {
+	if !strings.Contains(out, "recall") || !strings.Contains(out, "false-challenge") || !strings.Contains(out, "probe decided") {
 		t.Fatalf("report missing key lines:\n%s", out)
 	}
 	if !strings.Contains(out, "↳ rule=") {
