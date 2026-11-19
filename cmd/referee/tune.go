@@ -56,13 +56,23 @@ func cmdTune(args []string) error {
 
 	class := *taskClass
 	if class == "" {
-		for name := range pol.Tasks {
-			class = name
-			break
+		// deterministic: the FIRST task class in file order (map iteration is
+		// randomized in Go) — with several classes, pass --task-class
+		if len(pol.Source.Tasks) > 0 {
+			class = pol.Source.Tasks[0].Class
+		}
+		if class == "" && len(pol.Tasks) > 0 {
+			for name := range pol.Tasks {
+				class = name
+				break
+			}
 		}
 	}
 	if class == "" {
 		return fmt.Errorf("tune: policy has no task classes; caps come from a task class")
+	}
+	if len(pol.Tasks) > 1 && *taskClass == "" {
+		fmt.Fprintf(os.Stderr, "tune: note: %d task classes in policy — using first-in-file %q (pass --task-class to pin)\n", len(pol.Tasks), class)
 	}
 
 	g := &gate.Gate{Policy: pol, Matcher: labels.NewMatcher(), Classifier: labels.DefaultClassifier(),
