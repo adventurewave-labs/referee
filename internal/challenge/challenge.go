@@ -251,19 +251,18 @@ func Redact(tool string, args map[string]any, matched []labels.Block, classifier
 			continue
 		}
 		seen[b.ID] = true
-		r.Blocks = append(r.Blocks, BlockRef{ID: b.ID, Source: b.Source, HMAC: blockRef(b.Text, receiptKey)})
+		r.Blocks = append(r.Blocks, BlockRef{ID: b.ID, Source: sanitizeSource(b.Source, classifier, b.High()), HMAC: blockRef(b.Text, receiptKey)})
 		// Only NON-SENSITIVE untrusted blocks are excerpted (attacker text,
 		// clearly marked). High-sensitivity blocks — a secrets-file read is
 		// untrusted-by-path AND high — are HMAC-referenced only: the caught
 		// exfil attempt never delivers the secret to Slack (§5.4).
 		if b.Untrusted() && !b.High() {
-			// A normal label can be wrong: if the excerpt itself looks like a
-			// secret it is withheld and HMAC-referenced instead — redacted by
-			// construction, never delivered to Slack or the dashboard (§5.4).
-			x := excerpt(b.Text, 160)
-			if classifier.LooksHigh(x) || looksSensitiveKey(x) {
-				x = "(high-looking content withheld; ref " + blockRef(b.Text, receiptKey) + ")"
-			}
+			// A normal label can be wrong: the excerpt is withheld when it
+			// looks secret-shaped OR overlaps a matched high-sensitivity
+			// block — redacted by construction, never delivered to Slack or
+			// the dashboard (§5.4, round-12: token-boundary cut so no
+			// partial secret can straddle the truncation point).
+			x := excerptSafe(b.Text, 160, classifier, high, receiptKey)
 			r.HostileExcerpts = append(r.HostileExcerpts, x)
 		}
 	}
@@ -314,10 +313,29 @@ func blockRef(text string, key []byte) string {
 	return hex.EncodeToString(m.Sum(nil))[:12]
 }
 
-func excerpt(s string, n int) string {
-	s = strings.Join(strings.Fields(s), " ")
+// excerptSafe renders a hostile excerpt cut at a TOKEN boundary — a cut
+// mid-token can surface a partial secret whose credential shape is only
+// recognizable when complete — and withholds the excerpt entirely when it
+// looks secret-shaped or overlaps any matched high-sensitivity block
+// (withheld content stays reachable via its HMAC reference).
+func excerptSafe(text string, n int, classifier *labels.Classifier, highBlocks []labels.Block, receiptKey []byte) string {
+	s := strings.Join(strings.Fields(text), " ")
 	if len(s) > n {
-		return s[:n] + "…"
+		if cut := strings.LastIndex(s[:n], " "); cut > n/2 {
+			s = s[:cut]
+		} else {
+			s = s[:n]
+		}
+		s += "…"
+	}
+	if classifier.LooksHigh(s) || looksSensitiveKey(s) {
+		return "(high-looking content withheld; ref " + blockRef(text, receiptKey) + ")"
+	}
+	if len(highBlocks) > 0 {
+		m := labels.NewMatcher()
+		if len(m.Matches(s, highBlocks)) > 0 {
+			return "(content overlapping a high-sensitivity block withheld; ref " + blockRef(text, receiptKey) + ")"
+		}
 	}
 	return s
 }
@@ -394,4 +412,15 @@ func maskName(k string, classifier *labels.Classifier, highMatch bool) string {
 		return maskValue(k, classifier)
 	}
 	return k
+}
+
+// sanitizeSource keeps block sources safe for display: file-read sources
+// embed the raw path tool argument — agent-controlled, so it could BE the
+// secret — and get the same masking treatment as argument keys. Other
+// sources are operator/policy-controlled labels and pass through.
+func sanitizeSource(src string, classifier *labels.Classifier, high bool) string {
+	if strings.HasPrefix(src, "file:") {
+		return "file:" + maskName(strings.TrimPrefix(src, "file:"), classifier, high)
+	}
+	return src
 }

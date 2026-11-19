@@ -181,6 +181,59 @@ func TestRedactionMasksSecretKeyNames(t *testing.T) {
 	}
 }
 
+// round-12 regression A: a file-read block's Source embeds the raw path
+// argument (agent-controlled) — a secret planted as the path must not reach
+// the payload.
+func TestSourcePathMasked(t *testing.T) {
+	classifier := labels.DefaultClassifier()
+	secretPath := "/home/op/.secrets/aws_deploy_key=" + secret
+	blocks := []labels.Block{
+		{ID: "b-p", Source: "file:" + secretPath, Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: "key material"},
+	}
+	red := Redact("send_email", map[string]any{"body": "x"}, blocks, classifier, []byte("rk"))
+	var dump strings.Builder
+	for _, b := range red.Blocks {
+		dump.WriteString(b.Source + "\n")
+	}
+	if strings.Contains(dump.String(), secret) {
+		t.Fatalf("SECRET-AS-PATH LEAKED THROUGH BLOCK SOURCE: %q", dump.String())
+	}
+	// benign path on a non-high block survives for triage
+	blocks2 := []labels.Block{
+		{ID: "b-q", Source: "file:/home/op/work/notes.txt", Trust: labels.TrustUntrusted, Text: "notes"},
+	}
+	red2 := Redact("send_email", map[string]any{"body": "x"}, blocks2, classifier, []byte("rk"))
+	if red2.Blocks[0].Source != "file:/home/op/work/notes.txt" {
+		t.Fatalf("benign file path must survive, got %q", red2.Blocks[0].Source)
+	}
+}
+
+// round-12 regression B: hostile excerpts are cut at token boundaries and
+// withheld when they overlap matched high-sensitivity content — a secret
+// straddling the truncation point can never surface partially.
+func TestExcerptPartialSecretWithheld(t *testing.T) {
+	classifier := labels.DefaultClassifier()
+	// ~150 chars of filler, then the secret begins near the 160-char window
+	filler := "release checklist line with ordinary words about the deploy "
+	for len(filler) < 150 {
+		filler += "and more ordinary words here "
+	}
+	text := filler[:152] + secret + " trailing context after the credential ends"
+	blocks := []labels.Block{
+		{ID: "b-web", Source: "web", Trust: labels.TrustUntrusted, Text: text},
+		{ID: "b-cred", Source: "file:/home/op/.secrets/aws", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh, Text: "aws_deploy_key=" + secret},
+	}
+	red := Redact("send_email", map[string]any{"body": "report"}, blocks, classifier, []byte("rk"))
+	var dump strings.Builder
+	for _, h := range red.HostileExcerpts {
+		dump.WriteString(h + "\n")
+	}
+	out := dump.String()
+	if strings.Contains(out, "AKIA") {
+		t.Fatalf("PARTIAL SECRET PREFIX LEAKED IN EXCERPT: %q", out)
+	}
+}
+
 // notify failure fails closed: the caller gets an error and the pending entry
 // is cleaned up.
 func TestNotifyFailureFailsClosed(t *testing.T) {
