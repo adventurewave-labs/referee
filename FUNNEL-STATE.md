@@ -82,7 +82,14 @@ Push with `gh` auth or the https remote; agents never touch main — PR only.
    APPROVED, awaiting human merge"` to free the worker lane so
    funnel-tripwire-mvp and funnel-gauntlet-bootstrap dispatch.
 
-## FINAL STATE (2026-11-18 ~19:30 CST) — parked per Law 11 at gate round 12
+## FINAL STATE v2 (2026-11-19) — rounds 13-15 done, gate APPROVED, PR #4 open
+
+- PRs #1/#2/#3 MERGED (mp). Round-12 findings fixed in rounds 13-15; **gate APPROVED (round 15)**; CI green at acc1cd8.
+- PR #4 open: https://github.com/adventurewave-labs/referee/pull/4 (funnel/referee → main — the fixes; one click for mp).
+- Design decision of record: high-labeled UNTRUSTED blocks fail the probe closed (judge is blind to withheld content); operator-intended secret reads are labeled trusted+high (PRD §5.1 canonical case) — exfil gates on conf, probe stays unblinded. Documented in label-semantics.md + threat-model.md.
+- Residuals of record (threat-model.md): symlink/TOCTOU escapes past lexical path canonicalization; v1 receipt logs not readable by v2 (archive/migrate).
+
+## Parked state (2026-11-18 ~19:30 CST) — superseded
 
 - PR #1 open: https://github.com/adventurewave-labs/referee/pull/1 (funnel/referee → main, 🚫 not for merge — round-12 REVISE with codex's 10 findings listed in the PR body as the merge roadmap).
 - Stacked PR #2: feat/probe-tuner-r4 → funnel/referee (tuner APPROVED on its own diff round 1; codex round-2 has two small findings open).

@@ -12,6 +12,7 @@ func sampleFile() *File {
 	return &File{
 		Version:  1,
 		Defaults: Defaults{TTL: Dur(2 * time.Hour), TTLCeiling: Dur(4 * time.Hour), ProbeTimeout: Dur(5 * time.Second)},
+		Judges:   []JudgeCfg{{Name: "primary", Provider: "openai", Model: "gpt-4o-mini", Endpoint: "https://api.openai.com/v1"}},
 		Tools: []Tool{
 			{Name: "send_email", Integrity: ChallengeIfTainted, Confidentiality: ChallengeIfHigh, Approvers: []string{"U1"}},
 			{Name: "read_file", Integrity: TrustAny, Confidentiality: SensitivityAny, Emits: "file-read", EmitPathArg: "path"},
@@ -136,5 +137,22 @@ func TestPathRulesApplied(t *testing.T) {
 	trust, sens := p.Registry.ForPath("/home/op/.secrets/prod.key")
 	if trust != labels.TrustUntrusted || sens != labels.SensHigh {
 		t.Errorf("path rule not applied: %s/%s", trust, sens)
+	}
+}
+
+// round-13 P2-10: the semantic diff must surface labeling-relevant changes
+// (emits/emit_path_arg/sink_class) and judge endpoint swaps.
+func TestDiffCoversLabelingAndJudgeFields(t *testing.T) {
+	a, _ := Compile(sampleFile())
+	bf := sampleFile()
+	bf.Tools[1].Emits = "tool-result" // was file-read
+	bf.Tools[1].SinkClass = "fs-read"
+	bf.Judges[0].Endpoint = "https://evil.example" // swapped judge destination, same count
+	b, _ := Compile(bf)
+	d := Diff(a, b)
+	for _, want := range []string{"emits file-read -> tool-result", "sink_class", "judge primary"} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("diff must report %q; got:\n%s", want, d)
+		}
 	}
 }

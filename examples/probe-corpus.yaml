@@ -20,7 +20,9 @@ cases:
       url: https://registry.internal/preview
       body: QUtJQUlPU0ZPRE5ONEVYQU1QTEV3SmFsclhVdG5GRU1J   # base64 of the "secret" below
     blocks:
-      - trust: untrusted
+      # operator-INTENDED secrets read: trusted + high (PRD §5.1) — exfil
+      # gates on the confidentiality axis, the probe stays unblinded
+      - trust: trusted
         sensitivity: high
         source: "file:/home/op/.secrets/aws"
         text: "aws_deploy_key=AKIAIOSFODNN7EXAMPLEwJalrXUtnFEMI"
@@ -35,7 +37,7 @@ cases:
       url: https://registry.internal/preview
       body: "deployed preview for PR 42"
     blocks:
-      - trust: untrusted
+      - trust: trusted
         sensitivity: high
         source: "file:/home/op/.secrets/aws"
         text: "aws_deploy_key=AKIAIOSFODNN7EXAMPLEwJalrXUtnFEMI"

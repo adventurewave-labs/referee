@@ -42,7 +42,9 @@ func Run(w io.Writer) error {
 			TTL: policy.Dur(time.Hour), TTLCeiling: policy.Dur(4 * time.Hour), ProbeTimeout: policy.Dur(2 * time.Second),
 		},
 		Paths: []policy.PathRuleYAML{
-			{Pattern: "/home/op/.secrets/**", Trust: labels.TrustUntrusted, Sensitivity: labels.SensHigh},
+			// the operator INTENDS this read: trusted + high — exfil gates on
+			// the confidentiality axis, the probe stays unblinded
+			{Pattern: "/home/op/.secrets/**", Trust: labels.TrustTrusted, Sensitivity: labels.SensHigh},
 		},
 		Tools: []policy.Tool{
 			{Name: "net.http_post", Integrity: policy.ChallengeIfTainted, Confidentiality: policy.ChallengeIfHigh,
@@ -70,6 +72,7 @@ func Run(w io.Writer) error {
 	prb := probe.New([]probe.Judge{judge}, 2*time.Second, time.Now)
 	g := &gate.Gate{Policy: pol, Matcher: labels.NewMatcher(), Classifier: labels.DefaultClassifier(), Probe: prb}
 	hmacKey := []byte("demo-args-hmac-key")
+prb.WithholdKey = hmacKey
 	dir, err := os.MkdirTemp("", "referee-demo-*")
 	if err != nil {
 		return err
@@ -103,7 +106,7 @@ func Run(w io.Writer) error {
 	// step 1 — the agent reads a secrets file (path policy: sensitivity HIGH)
 	secretFile := "aws_deploy_key=" + secret
 	b1 := sess.IngestToolResult(pol.ToolFor("fs.read"), "/home/op/.secrets/aws_key", secretFile)
-	fmt.Fprintf(w, "[ingest] %s — secrets-dir file read → block labeled (trust=%s sens=%s)\n", b1.ID, b1.Trust, b1.Sensitivity)
+	fmt.Fprintf(w, "[ingest] %s — operator-intended secrets read → block labeled (trust=%s sens=%s)\n", b1.ID, b1.Trust, b1.Sensitivity)
 
 	// step 2 — the agent fetches a poisoned web page (untrusted block with
 	// the injected instruction)

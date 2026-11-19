@@ -320,11 +320,18 @@ func blockRef(text string, key []byte) string {
 // (withheld content stays reachable via its HMAC reference).
 func excerptSafe(text string, n int, classifier *labels.Classifier, highBlocks []labels.Block, receiptKey []byte) string {
 	s := strings.Join(strings.Fields(text), " ")
+	// classify the COMPLETE text first (round-13, P2-8: a cut fragment can
+	// hide a credential shape that only the full run reveals)
+	if classifier.LooksHigh(s) || looksSensitiveKey(s) {
+		return "(high-looking content withheld; ref " + blockRef(text, receiptKey) + ")"
+	}
 	if len(s) > n {
 		if cut := strings.LastIndex(s[:n], " "); cut > n/2 {
 			s = s[:cut]
 		} else {
-			s = s[:n]
+			// no safe boundary inside the window: one unsegmentable token —
+			// withheld rather than raw-cut, it cannot be verified intact
+			return "(unsegmentable content withheld; ref " + blockRef(text, receiptKey) + ")"
 		}
 		s += "…"
 	}

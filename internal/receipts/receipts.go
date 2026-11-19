@@ -206,13 +206,34 @@ func headsMetaMessage(batch int) []byte {
 	return []byte(fmt.Sprintf("referee-heads-meta|batch=%d", batch))
 }
 
-// computeHash chains the entry onto its predecessor.
+// computeHash chains the entry onto its predecessor over an UNAMBIGUOUS
+// encoding: every field is length-prefixed, so delimiter characters inside
+// field values (e.g. Task="a|b" vs Tool="b|c" shifts) can no longer produce
+// identical hash inputs for different entries (round-13, P1).
+// hashFormatVersion bumps whenever the hash input encoding changes; logs
+// written by an older format fail verification with an explicit message
+// instead of a confusing hash mismatch (round-13 follow-up).
+const hashFormatVersion = "referee-receipts-hashfmt=2"
+
 func (e Entry) computeHash() string {
 	h := sha256.New()
-	fmt.Fprintf(h, "%d|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s",
-		e.Seq, e.TS.UTC().Format(time.RFC3339Nano), e.Task, e.Tool, e.Rule,
-		e.Decision, e.Approver, strings.Join(e.BlockIDs, ","), e.Axis,
-		e.ArgsHMAC, e.PrevHash)
+	writeField := func(v string) {
+		fmt.Fprintf(h, "%x:", len(v))
+		h.Write([]byte(v))
+		h.Write([]byte("\x00"))
+	}
+	writeField(hashFormatVersion)
+	fmt.Fprintf(h, "%x:", e.Seq)
+	writeField(e.TS.UTC().Format(time.RFC3339Nano))
+	writeField(e.Task)
+	writeField(e.Tool)
+	writeField(e.Rule)
+	writeField(e.Decision)
+	writeField(e.Approver)
+	writeField(strings.Join(e.BlockIDs, ","))
+	writeField(e.Axis)
+	writeField(e.ArgsHMAC)
+	writeField(e.PrevHash)
 	return hex.EncodeToString(h.Sum(nil))
 }
 
@@ -261,7 +282,7 @@ func checkChain(entries []Entry) error {
 			return fmt.Errorf("receipts: broken chain at seq %d", e.Seq)
 		}
 		if e.Hash != e.computeHash() {
-			return fmt.Errorf("receipts: hash mismatch at seq %d — log tampered", e.Seq)
+			return fmt.Errorf("receipts: hash mismatch at seq %d — log tampered, or written by an older hash format (v1 logs are not readable by this version; archive or migrate)", e.Seq)
 		}
 		prev = e.Hash
 	}

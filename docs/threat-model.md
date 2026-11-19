@@ -36,6 +36,7 @@ written to be re-attacked by reviewers.
 | Indirect prompt injection steers a tool call | integrity axis: containment taint, else set-probe; `require-trusted` denies with no human path |
 | Encoded exfil (base64/url/hex secrets in args) | decoding normalizations before containment; per-normalization §8 regressions |
 | Repeated injection (two copies hide behind each other) | set-based probe question removes the whole untrusted set at once |
+| Probe as exfil channel (secrets sent to external judges) | high-sensitivity block text is withheld from judge prompts; withheld content makes the probe fail closed (never clears) |
 | Cache poisoning across context states | cache key includes the full untrusted-set hash — a negative cached earlier cannot clear after new untrusted blocks arrive |
 | Normal cap used to move a secret | sensitivity coverage is part of the cap: high calls need high caps (§5.2) |
 | Token reuse after task end | immediate revocation on task-end + absolute wall-clock TTL; no grace window; TTL alone kills tokens the harness never ends |

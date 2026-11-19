@@ -1,6 +1,7 @@
 package receipts
 
 import (
+	"time"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -286,4 +287,28 @@ func mustRead(t *testing.T, path string) []byte {
 		t.Fatal(err)
 	}
 	return b
+}
+
+// round-13 P1-5: the hash encoding is unambiguous — delimiter characters
+// inside field values can no longer make two different entries share a hash
+// (and therefore a signed head).
+func TestDelimiterAmbiguityClosed(t *testing.T) {
+	mk := func(task, tool string) Entry {
+		e := Entry{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: task, Tool: tool,
+			Rule: "r", Decision: "deny", Axis: "i", ArgsHMAC: "h", PrevHash: "p"}
+		e.Hash = e.computeHash()
+		return e
+	}
+	// The old pipe-separated encoding made these two entries produce the
+	// IDENTICAL hash input — a swap between them was invisible to the chain
+	// and to signed heads. The length-prefixed encoding must separate them.
+	e1 := mk("a|b", "c")
+	e2 := mk("a", "b|c")
+	if e1.Hash == e2.Hash {
+		t.Fatalf("delimiter-shifted field boundaries share a hash — the encoding is ambiguous")
+	}
+	// identical content must still hash identically (no nondeterminism)
+	if mk("a|b", "c").Hash != e1.Hash {
+		t.Fatalf("hash must be deterministic for identical entries")
+	}
 }

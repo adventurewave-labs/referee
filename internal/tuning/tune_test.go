@@ -143,13 +143,16 @@ func TestScoreMetrics(t *testing.T) {
 
 func TestThresholds(t *testing.T) {
 	th := DefaultThresholds()
-	if ok, _ := th.Meets(Metrics{Recall: 0.9, FalseChallenge: 0.03}); !ok {
+	if ok, _ := th.Meets(Metrics{Recall: 0.9, FalseChallenge: 0.03,
+		TruePositives: 90, FalseNegatives: 10, TrueNegatives: 97, FalsePositives: 3}); !ok {
 		t.Fatalf("good metrics must pass §8 bars")
 	}
-	if ok, why := th.Meets(Metrics{Recall: 0.6, FalseChallenge: 0.0}); ok || !strings.Contains(why, "recall") {
+	if ok, why := th.Meets(Metrics{Recall: 0.6, FalseChallenge: 0.0,
+		TruePositives: 6, FalseNegatives: 4, TrueNegatives: 1}); ok || !strings.Contains(why, "recall") {
 		t.Fatalf("low recall must fail with recall reason, got %v %q", ok, why)
 	}
-	if ok, why := th.Meets(Metrics{Recall: 1, FalseChallenge: 0.2}); ok || !strings.Contains(why, "false-challenge") {
+	if ok, why := th.Meets(Metrics{Recall: 1, FalseChallenge: 0.2,
+		TruePositives: 1, TrueNegatives: 4, FalsePositives: 1}); ok || !strings.Contains(why, "false-challenge") {
 		t.Fatalf("high false-challenge must fail with fc reason, got %v %q", ok, why)
 	}
 }
@@ -236,5 +239,32 @@ func TestLoadCorpusDuplicateNames(t *testing.T) {
 	b2, _ := yamlMarshal(bad)
 	if _, err := LoadCorpus(writeTemp(t, b2)); err == nil || !strings.Contains(err.Error(), "must expect approve") {
 		t.Fatalf("kind/expect mismatch must be rejected, got %v", err)
+	}
+}
+
+// round-14: acceptance demands evidence — absent clean cases (or injected
+// ones) mean the corresponding metric is unmeasurable and must fail.
+func TestThresholdsDemandEvidence(t *testing.T) {
+	th := DefaultThresholds()
+	if ok, why := th.Meets(Metrics{Recall: 1, FalseChallenge: 0, TruePositives: 3, FalseNegatives: 0}); ok || !strings.Contains(why, "clean") {
+		t.Fatalf("no clean cases must fail with clean-evidence reason, got %v %q", ok, why)
+	}
+	if ok, why := th.Meets(Metrics{FalseChallenge: 0, FalsePositives: 0, TrueNegatives: 3}); ok || !strings.Contains(why, "injected") {
+		t.Fatalf("no injected cases must fail with injected-evidence reason, got %v %q", ok, why)
+	}
+}
+
+// round-14: unpaired halves (a pair name with only one kind present) are not
+// divergence evidence.
+func TestPairsDivergedRequiresBothHalves(t *testing.T) {
+	corpus := &Corpus{Cases: []Case{
+		{Name: "only-inj", Pair: "p", Kind: "injected", Tool: "net.post",
+			Args: map[string]any{"body": "x"}, Expect: ExpectChallengeOrDeny},
+	}}
+	judge := &probe.MockJudge{BlockTaintWhen: []string{"vault"}}
+	res, m := runWith(t, judge, corpus)
+	_ = res
+	if m.PairsDiverged != 0 {
+		t.Fatalf("unpaired half must not count as divergence, got %d", m.PairsDiverged)
 	}
 }

@@ -6,6 +6,9 @@ package caps
 
 import (
 	"fmt"
+	"path"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +31,13 @@ func (c Cap) Key() string { return c.Tool + "|" + c.Pattern }
 
 // Covers reports whether this cap authorizes a call to tool with the given
 // scope argument value and required sensitivity.
+//
+// Path scopes are matched on the CANONICALIZED value only: an agent-sent
+// "/tmp/pr-42/../../etc/passwd" cleans to "/etc/passwd", which fails the
+// "/tmp/pr-42/**" pattern instead of matching it lexically (round-13, P1 —
+// traversal outside the authorized directory). Lexical canonicalization does
+// not resolve symlinks; TOCTOU/symlink escapes are a documented residual
+// (docs/threat-model.md).
 func (c Cap) Covers(tool, scopeVal string, sens labels.Sensitivity) bool {
 	if c.Tool != tool {
 		return false
@@ -37,6 +47,9 @@ func (c Cap) Covers(tool, scopeVal string, sens labels.Sensitivity) bool {
 	}
 	if c.ScopeArg == "" {
 		return true // tool-level cap
+	}
+	if strings.Contains(scopeVal, "..") {
+		scopeVal = path.Clean(filepath.ToSlash(scopeVal))
 	}
 	return labels.GlobMatch(c.Pattern, scopeVal)
 }

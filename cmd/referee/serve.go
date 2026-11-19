@@ -67,6 +67,7 @@ func cmdServe(args []string) error {
 
 	// keys + receipts (§5.4)
 	hmacKey, err := keys.LoadOrCreateHMAC(os.Getenv("REF_RECEIPT_HMAC"), *hmacKeyPath)
+	prb.WithholdKey = hmacKey // keyed refs for withheld high content in judge prompts
 	if err != nil {
 		return err
 	}

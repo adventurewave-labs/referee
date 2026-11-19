@@ -78,6 +78,16 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 		}
 	}
 
+	// The gate blocks synchronously (influence probe, challenge wait): the
+	// token may expire or be revoked DURING the decision. An approval never
+	// outlives the token it was gated with — recheck after every blocking
+	// authorization operation, not just challenges (round-13, P1-4).
+	if d.Action != gate.Deny && !tokenStillLive(e, taskID, token) {
+		d.Action = gate.Deny
+		d.Rule += "+cap:token-dead-after-gate"
+		d.Reason = "the task token died while the gate was deciding (probe/challenge block, task end, or TTL); denying"
+	}
+
 	// no receipt, no call: a decision that cannot be recorded never forwards
 	if err := e.receipt(taskID, params, d, string(argsJSON)); err != nil {
 		if e.Log != nil {
