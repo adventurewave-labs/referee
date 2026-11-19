@@ -215,6 +215,9 @@ func Compile(f *File) (*Policy, error) {
 		if !labels.ValidRedactMode(labels.RedactMode(t.Redact)) {
 			return nil, fmt.Errorf("policy: tool %q bad redact %q (none|strip|mask)", t.Name, t.Redact)
 		}
+		if t.Redact == "" {
+			t.Redact = string(labels.RedactNone) // explicit default: empty must never act as "enabled"
+		}
 		p.Tools[t.Name] = &t
 	}
 
@@ -272,7 +275,8 @@ func (p *Policy) ToolFor(name string) *Tool {
 	if t, ok := p.Tools[name]; ok {
 		return t
 	}
-	return &Tool{Name: name, Integrity: ChallengeIfTainted, Confidentiality: ChallengeIfHigh, SinkClass: name}
+	return &Tool{Name: name, Integrity: ChallengeIfTainted, Confidentiality: ChallengeIfHigh, SinkClass: name,
+		Redact: string(labels.RedactNone)}
 }
 
 // NarrowCaps implements the manifest-narrowing rule (§5.2): the harness may

@@ -53,7 +53,11 @@ func (e *Engine) HandleToolCall(sess *Session, params ToolCallParams) (ToolCallR
 	// with the redacted arguments — the upstream tool never sees the tainted
 	// segments. Denials from the capability axis are not redactable, and a
 	// call that still fails the re-gate keeps its original decision.
-	if mode := labels.RedactMode(tool.Redact); mode != labels.RedactNone &&
+	mode := labels.RedactMode(tool.Redact)
+	if mode == "" {
+		mode = labels.RedactNone // belt and braces: unnormalized configs never redact
+	}
+	if mode != labels.RedactNone &&
 		(d.Action == gate.Challenge || d.Action == gate.Deny) &&
 		(strings.Contains(d.Rule, "tainted") || strings.HasPrefix(d.Rule, "conf:")) {
 		matched := blocksForIDs(blocks, d.BlockIDs)
