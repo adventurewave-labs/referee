@@ -131,7 +131,7 @@ func TestRedactValueFoldedCaseSpansAlign(t *testing.T) {
 // must not shift the cut (the per-rune map version leaked trailing chars).
 func TestRedactValueShrinkingFoldAligns(t *testing.T) {
 	c := DefaultClassifier()
-	needle := "\U0001E9ECRET_TOKEN_998877665544" // ẞECRET… (ẞ lowers to 2-byte ß)
+	needle := "ẞECRET_TOKEN_998877665544" // literal ẞ: ToLower(ẞ)=ß is 2 bytes vs 3 (byte-length-changing fold)
 	block := Block{ID: "b-s", Source: "file:/home/op/work", Trust: TrustUntrusted, Text: needle}
 	arg := "use " + needle + " today"
 	clean, changed := RedactValue(arg, matched_one(block), RedactStrip, c, 12)

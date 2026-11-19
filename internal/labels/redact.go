@@ -96,9 +96,11 @@ func RedactValue(value string, matched []Block, mode RedactMode, classifier *Cla
 			addSpan(loc[0], loc[1])
 		}
 	}
-	if highEntropyRun(value) {
+	if highEntropyRun(value) && len(spans) == 0 {
 		// an entropy run cannot be localized by the shipped patterns; withhold
-		// the whole value rather than guess at spans
+		// the whole value rather than guess at spans — but only as a LAST
+		// resort: when precise spans exist they are exact and the withhold
+		// would nuke benign text around them (round-26 finding)
 		encodedHit = true
 	}
 

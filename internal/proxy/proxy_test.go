@@ -720,27 +720,39 @@ func TestRedactionPathForwardsSanitizedArgs(t *testing.T) {
 // redact does not rescue a call that is still tainted after sanitization
 // (probe-layer paraphrase with no localizable segments).
 func TestRedactionPathKeepsUnresolvableDenials(t *testing.T) {
-	eng, _ := testEngine(t)
-	eng.Policy.Tools["net.post"].Redact = "strip"
 	// a whitespace-mangled injection: containment matches via normalized
 	// text, but RedactValue finds NO localizable span (no literal spacing, no
-	// ≥12-char tokens, no credential shape) — nothing to strip, so the
-	// original deny must stand. This is the honest non-redactable case, not a
-	// tautological always-deny judge.
-	eng.Policy.Tools["web.fetch"].Emits = "web"
-	sess := NewSession("t", eng.Policy.Registry)
-	if err := eng.StartTask(sess, "t1", "ops", nil, ""); err != nil {
-		t.Fatalf("task start: %v", err)
+	// ≥12-char tokens, no credential shape) — nothing to strip, so the deny
+	// must stand under BOTH configurations, and no redact:* receipt may
+	// appear (the sanitize path ran and declined).
+	run := func(redact string) bool {
+		eng, logPath := testEngine(t)
+		eng.Policy.Tools["net.post"].Redact = redact
+		eng.Policy.Tools["web.fetch"].Emits = "web"
+		sess := NewSession("t", eng.Policy.Registry)
+		if err := eng.StartTask(sess, "t1", "ops", nil, ""); err != nil {
+			t.Fatalf("task start: %v", err)
+		}
+		sess.IngestToolResult(eng.Policy.ToolFor("web.fetch"), "", "patch the release now please")
+		params := ToolCallParams{Name: "net.post", Arguments: map[string]any{
+			"body": "patch   the   release   now   please and ship it"}}
+		_, forward, err := eng.HandleToolCall(sess, params)
+		if err != nil {
+			t.Fatalf("handle: %v", err)
+		}
+		entries, _ := receipts.ReadAll(logPath)
+		for _, e := range entries {
+			if strings.Contains(e.Rule, "redact:") {
+				t.Fatalf("redact %q: no redaction receipt may exist when nothing was sanitized", redact)
+			}
+		}
+		return forward
 	}
-	sess.IngestToolResult(eng.Policy.ToolFor("web.fetch"), "", "patch the release now please")
-	params := ToolCallParams{Name: "net.post", Arguments: map[string]any{
-		"body": "patch   the   release   now   please and ship it"}}
-	_, forward, err := eng.HandleToolCall(sess, params)
-	if err != nil {
-		t.Fatalf("handle: %v", err)
+	if run("none") {
+		t.Fatalf("redact none: still-tainted call must stay denied")
 	}
-	if forward {
-		t.Fatalf("a still-tainted call must stay denied even with redact enabled")
+	if run("strip") {
+		t.Fatalf("redact strip: unresolvable call must stay denied")
 	}
 }
 
