@@ -1,0 +1,103 @@
+# Referee — example policy: coding agent with shell/file/network tools
+#
+# Compile-checked at load (`referee policy check`). The gate denies anything
+# this policy doesn't cover: undeclared tools have no caps, and
+# cap-gap-challenge is opt-in per tool.
+
+version: 1
+
+defaults:
+  ttl: 4h            # per-task default (§5.2)
+  ttl_ceiling: 24h   # hard operator ceiling — requested TTLs clamp DOWN
+  probe_timeout: 8s  # influence probe budget; timeout = tainted (fail closed)
+
+# Path policy: file reads are labeled by path (§5.1 — trust AND sensitivity
+# by path; secrets dirs label content HIGH so any copy of them gates).
+paths:
+  - pattern: "/home/op/.ssh/**"
+    trust: untrusted
+    sensitivity: high
+  - pattern: "/home/op/.secrets/**"
+    trust: untrusted
+    sensitivity: high
+  - pattern: "/home/op/work/**"
+    trust: untrusted
+    sensitivity: normal
+
+tools:
+  # exec is the injection prize: require provably-untainted arguments.
+  # No human path — tainted exec calls are denied outright.
+  - name: bash
+    integrity: require-trusted
+    confidentiality: require-normal
+
+  # file reads are pure sources: anything they return may carry injection.
+  - name: read_file
+    integrity: trust-any
+    confidentiality: sensitivity-any
+    emits: file-read
+    emit_path_arg: path
+
+  # web/rag fetches are pure sources too.
+  - name: web_fetch
+    integrity: trust-any
+    confidentiality: sensitivity-any
+    emits: web
+
+  # email is the classic sink: challenge on both axes, allowlisted approvers.
+  - name: send_email
+    integrity: challenge-if-tainted
+    confidentiality: challenge-if-high
+    approvers: ["U012345"]
+    # cap-gap-challenge: false  (default — a missing cap denies, no human)
+
+  # posting to the internal registry moves high content routinely:
+  # high cap in the task class covers it; taint still challenges.
+  - name: http_post
+    integrity: challenge-if-tainted
+    confidentiality: challenge-if-high
+    approvers: ["U012345", "U067890"]
+
+# Task classes: the harness names a class at task_start and may request a
+# SUBSET of these caps — it can narrow, never widen (§5.2).
+tasks:
+  - class: deploy-preview
+    ttl: 4h
+    caps:
+      - tool: bash
+        scope_arg: command
+        pattern: "make *"
+        sensitivity: normal
+      - tool: read_file
+        pattern: "**"
+        sensitivity: normal
+      - tool: http_post
+        pattern: "*"
+        sensitivity: high        # high cap: normal caps never authorize high calls
+      - tool: send_email
+        pattern: "*"
+        sensitivity: normal
+
+  - class: research
+    ttl: 2h
+    caps:
+      - tool: web_fetch
+        pattern: "*"
+        sensitivity: normal
+      - tool: read_file
+        pattern: "**"
+        sensitivity: normal
+
+# Influence-probe judges (§5.1). Two judges enable consensus mode when a tool
+# sets probe_consensus: true — disagreement collapses to tainted.
+judges:
+  - name: primary
+    provider: openai              # OpenAI-compatible chat completions
+    model: gpt-4o-mini
+    endpoint: https://api.openai.com/v1
+    api_key_env: REF_JUDGE_API_KEY
+  - name: secondary
+    provider: anthropic
+    model: claude-3-5-haiku-20241022
+    endpoint: https://api.anthropic.com
+    api_key_env: REF_JUDGE_ANTHROPIC_KEY

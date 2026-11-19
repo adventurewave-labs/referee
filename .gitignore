@@ -1,0 +1,12 @@
+# receipts and keys are per-deployment state — never commit
+referee-receipts*.jsonl
+referee-heads*.jsonl
+*.seed
+*.key
+.args-hmac-key
+*hmac-key*
+remote-out/
+/referee
+/dist/
+referee-dashboard-token
+referee-pubkey.hex

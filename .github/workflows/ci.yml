@@ -1,0 +1,25 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: vet + build + test + bench
+        run: |
+          go vet ./...
+          go build ./...
+          go test ./...
+          go test -run '^$' -bench BenchmarkGateContainment -benchtime 1s ./internal/gate/
+      - name: containment-path budget (<5ms per gate call)
+        run: go test -run TestContainmentLatencyBudget -v ./internal/gate/
