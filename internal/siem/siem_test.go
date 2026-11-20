@@ -488,20 +488,6 @@ func TestPartialRejectionStringForm(t *testing.T) {
 	}
 }
 
-// round-44: a MALFORMED partial-rejection acknowledgement must not be
-// treated as clean success — it is reported.
-func TestPartialRejectionMalformedReported(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":"not-a-number"}}`))
-	}))
-	defer srv.Close()
-	// "not-a-number" parses as 0 via string path (ParseInt fails → 0) — the
-	// malformed ack must still be surfaced as an error
-	err := New(srv.URL, nil).Ship(sampleEntries())
-	if err == nil || !strings.Contains(err.Error(), "malformed") {
-		t.Fatalf("malformed ack must be reported, got %v", err)
-	}
-}
 
 // round-46: `{}` and omitted partialSuccess are VALID full success —
 // rejecting them would hold the cursor and re-export forever. The server
@@ -634,5 +620,28 @@ func TestNullAckBodyMalformed(t *testing.T) {
 	err := New(srv.URL, nil).Ship(sampleEntries())
 	if err == nil || !strings.Contains(err.Error(), "malformed") {
 		t.Fatalf("null ack body must be malformed, got %v", err)
+	}
+}
+
+// round-56: NOTHING from the ack body reaches logs — not the decode error
+// text (quotes raw values), not an implausible rejection count (a credential
+// hidden as the count itself).
+func TestAckValuesNeverReachErrors(t *testing.T) {
+	for _, body := range []string{
+		`{"partialSuccess":{"rejectedLogRecords":9876543210}}`,
+		`{"partialSuccess":{"rejectedLogRecords":"9876543210"}}`,
+		`{"partialSuccess":{"rejectedLogRecords":"not-a-number-9876543210"}}`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(body))
+		}))
+		err := New(srv.URL, nil).Ship(sampleEntries())
+		srv.Close()
+		if err == nil {
+			t.Fatalf("body %s must be reported", body)
+		}
+		if strings.Contains(err.Error(), "9876543210") {
+			t.Fatalf("ENDPOINT-CONTROLLED VALUE LEAKED INTO ERROR: %v", err)
+		}
 	}
 }

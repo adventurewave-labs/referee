@@ -233,7 +233,10 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 	// present, is a 64-bit integer encoded as a number OR string; null,
 	// negative, and non-numeric encodings are malformed.
 	if err := json.Unmarshal(body, &ack); err != nil {
-		return fmt.Errorf("siem: malformed ack: %v", err)
+		// FIXED message: Go's type errors quote the raw value, and the body
+		// is endpoint-controlled — an echoed numeric credential must never
+		// reach logs via the decode error (round-55)
+		return fmt.Errorf("siem: malformed ack (undecodable response body)")
 	}
 	if ack.PartialSuccess == nil || len(ack.PartialSuccess.RejectedLogRecords) == 0 {
 		return nil // full success
@@ -261,8 +264,13 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 		return fmt.Errorf("siem: malformed partial-rejection acknowledgement")
 	}
 	if rejected > 0 {
-		// the endpoint-controlled message is NOT included: the response body
-		// is attacker-controlled and can echo credentials
+		// EVERYTHING in the ack is endpoint-controlled — including the count
+		// itself (a credential hidden as "rejected count" must not reach
+		// logs). Plausible counts (≤ batch size) are reported; implausible
+		// ones get a fixed message.
+		if rejected > len(entries) {
+			return fmt.Errorf("siem: endpoint reported an implausible rejection count (cursor held; retrying)")
+		}
 		return fmt.Errorf("siem: endpoint rejected %d of %d records (cursor held; retrying)", rejected, len(entries))
 	}
 	return nil
