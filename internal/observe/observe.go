@@ -67,7 +67,10 @@ func Analyze(entries []receipts.Entry) Report {
 		if strings.Contains(e.Axis, "probe") {
 			ts.ProbeDecided++
 		}
-		if strings.Contains(e.Rule, "cap:") {
+		// cap gap = the MISSING-CAP clause on a deny/challenge (round-74):
+		// approved calls and unrelated cap-prefixed rules are not gaps
+		if (e.Decision == "deny" || e.Decision == "challenge") &&
+			strings.HasPrefix(e.Rule, "cap:missing") {
 			ts.CapGaps++
 		}
 		ts.Rules[e.Rule]++
@@ -120,17 +123,17 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 	// receipts, or approved receipts whose task is absent from the map all
 	// make "unused" conclusions unsupportable — an approved call of unknown
 	// class may have exercised ANY grant (round-N gate finding).
-	mappedApproved, unknownApproved := 0, 0
+	// Attributability is about MAPPING, not existence: denied/challenged
+	// receipts carry the same class information as approvals (a class that
+	// denies everything still proves its grants went unused — round-74).
+	// Only receipts whose class is UNKNOWN are non-attributable.
+	mappedDecisions, unknownDecisions := 0, 0
 	for _, e := range entries {
-		if e.Decision == "approve" {
-			// an empty class value is UNMAPPED: usage recorded under ""
-			// hides real grants and recommends pruning them (round-78)
-			if cls, ok := taskClasses[e.Task]; ok && cls != "" {
-				mappedApproved++
-			} else {
-				unknownApproved++
-			}
+		if cls, ok := taskClasses[e.Task]; ok && cls != "" {
+			mappedDecisions++
+			continue
 		}
+		unknownDecisions++
 	}
 	// task-class VALUES must exist in the policy: a typo'd class would hide
 	// real usage and recommend pruning in-use grants (round-79)
@@ -156,9 +159,9 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 			"INFO: task-class attribution references classes not in the policy: %s — fix the mapping; skipping unused-cap suggestions", strings.Join(names, ", ")))
 		return out
 	}
-	if taskClasses == nil || len(taskClasses) == 0 || mappedApproved == 0 || unknownApproved > 0 {
+	if taskClasses == nil || len(taskClasses) == 0 || mappedDecisions == 0 || unknownDecisions > 0 {
 		out = append(out, fmt.Sprintf(
-			"INFO: unused-cap detection needs COMPLETE task-class attribution — %d approved call(s) have unmapped tasks; pass taskClasses (task-id → class) covering every approved receipt; skipping unused-cap suggestions", unknownApproved))
+			"INFO: unused-cap detection needs COMPLETE task-class attribution — %d decision(s) have unmapped tasks; pass taskClasses (task-id → class) covering every receipt; skipping unused-cap suggestions", unknownDecisions))
 		return out
 	}
 	exercised := map[string]map[string]bool{} // class → tool → approved?

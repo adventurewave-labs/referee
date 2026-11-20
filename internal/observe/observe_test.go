@@ -335,3 +335,46 @@ func TestPartialAttributionWithPolicySuppresses(t *testing.T) {
 		t.Fatalf("unknown-class approved call overlapping the grant must suppress unused conclusions: %s", joined)
 	}
 }
+
+// round-74: CapGaps counts ONLY missing-cap denials/challenges — approved
+// calls with cap-ish rules and unrelated cap-prefixed rules are not gaps.
+func TestCapGapsPrecision(t *testing.T) {
+	entries := []receipts.Entry{
+		entry(1, "x", "cap:missing", "deny", "unchecked"),                // gap ✓
+		entry(2, "x", "cap:missing", "challenge", "unchecked"),           // gap ✓
+		entry(3, "x", "cap:missing-resolved", "approve", "checked"),      // approved: not a gap
+		entry(4, "x", "cap:other-rule", "deny", "unchecked"),             // not cap:missing: not a gap
+		entry(5, "x", "auto:clean", "approve", "checked"),                // clean: not a gap
+	}
+	rep := Analyze(entries)
+	var gaps int
+	for _, ts := range rep.Tools {
+		gaps += ts.CapGaps
+	}
+	if gaps != 2 {
+		t.Fatalf("cap gaps must count only missing-cap deny/challenge, got %d", gaps)
+	}
+}
+
+// round-74: a zero-approval corpus still supports unused-cap detection when
+// its decisions are fully attributed — denial histories prove grants unused.
+func TestZeroApprovalCorpusStillDetects(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps:  []policy.CapDecl{{Tool: "granted", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "t", Tool: "other",
+			Rule: "auto:clean", Decision: "deny", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+	}
+	rep := Analyze(entries)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"})
+	joined := strings.Join(sugg, "\n")
+	if !strings.Contains(joined, "UNUSED? task ops grants granted") {
+		t.Fatalf("zero-approval but fully-attributed corpus must still flag unused grants: %s", joined)
+	}
+}
