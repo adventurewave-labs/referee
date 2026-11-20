@@ -61,6 +61,19 @@ type Attribute struct {
 
 func strAttr(k, v string) Attribute { return Attribute{Key: k, Value: AnyValue{StringValue: v}} }
 
+// PartialRejectionError is returned by ShipContext when the endpoint
+// accepted SOME records of the batch and rejected others (OTLP
+// partialSuccess). Tailers halve the range recursively to isolate the
+// rejected records.
+type PartialRejectionError struct {
+	Rejected int64
+	Total    int
+}
+
+func (e *PartialRejectionError) Error() string {
+	return fmt.Sprintf("endpoint rejected %d of %d records (cursor held; retrying)", e.Rejected, e.Total)
+}
+
 // severity maps a gate decision to an OTLP severity. Denials are the
 // security-relevant signal: WARN. Challenges: NOTICE. Approvals: INFO.
 func severity(decision string) string {
@@ -273,12 +286,13 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 	if rejected > 0 {
 		// EVERYTHING in the ack is endpoint-controlled — including the count
 		// itself (a credential hidden as "rejected count" must not reach
-		// logs). Plausible counts (≤ batch size) are reported; implausible
-		// ones get a fixed message.
+		// logs). Plausible counts (≤ batch size) come back as the typed
+		// PartialRejectionError (tailers halve the range to isolate them);
+		// implausible counts get a fixed message and hold the cursor.
 		if rejected > int64(len(entries)) {
 			return fmt.Errorf("siem: endpoint reported an implausible rejection count (cursor held; retrying)")
 		}
-		return fmt.Errorf("siem: endpoint rejected %d of %d records (cursor held; retrying)", rejected, len(entries))
+		return &PartialRejectionError{Rejected: rejected, Total: len(entries)}
 	}
 	return nil
 }
@@ -395,15 +409,54 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				if end > len(entries) {
 					end = len(entries)
 				}
-				if err := t.Log.ShipContext(ctx, entries[shipped:end]); err != nil {
-					if t.Report != nil {
-						t.Report(err)
-					}
-					break // retry the same cursor next tick (best-effort)
+				// partial rejection: the batch splits recursively down to
+				// singletons — accepted runs advance the cursor, a singleton
+				// the endpoint persistently rejects is DROPPED LOUDLY (reported
+				// with its seq) so later receipts never stall (round-68)
+				consumed := t.shipRange(ctx, entries, shipped, end, 0)
+				if consumed == 0 {
+					break // transient failure: retry the same cursor next tick
 				}
-				shipped = end
+				shipped += consumed
 				lastHash = entries[shipped-1].Hash
 			}
 		}
 	}
+}
+
+// shipRange ships entries[i:j]. Non-partial errors (endpoint down, 5xx) are
+// reported and consume nothing (cursor held — retry next tick). Partial
+// rejections HALVE the range until singletons; a singleton the endpoint
+// rejects is dropped loudly (reported) and consumed, so one poisoned record
+// can never stall every receipt after it.
+func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, depth int) int {
+	if i >= j {
+		return 0
+	}
+	err := t.Log.ShipContext(ctx, entries[i:j])
+	if err == nil {
+		return j - i
+	}
+	var pre *PartialRejectionError
+	if !errors.As(err, &pre) {
+		if t.Report != nil {
+			t.Report(err)
+		}
+		return 0 // transient: hold the cursor
+	}
+	if j-i == 1 {
+		if t.Report != nil {
+			t.Report(fmt.Errorf("siem: endpoint persistently rejected seq %d — DROPPING it so later receipts export", entries[i].Seq))
+		}
+		return 1
+	}
+	if depth > 16 { // paranoia bound: 2^16 batches cannot be reached
+		if t.Report != nil {
+			t.Report(fmt.Errorf("siem: split depth exhausted — holding cursor at %d", i))
+		}
+		return 0
+	}
+	mid := (i + j) / 2
+	n := t.shipRange(ctx, entries, i, mid, depth+1)
+	return n + t.shipRange(ctx, entries, mid, j, depth+1)
 }

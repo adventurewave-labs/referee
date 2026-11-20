@@ -1,6 +1,7 @@
 package siem
 
 import (
+	"fmt"
 	"os"
 	"encoding/json"
 	"io"
@@ -666,5 +667,88 @@ func TestNonOKStatusesNotConfirmed(t *testing.T) {
 	defer srv.Close()
 	if err := New(srv.URL, nil).Ship(sampleEntries()); err != nil {
 		t.Fatalf("200 with {} must succeed: %v", err)
+	}
+}
+
+// round-68: partial rejection of a persistent singleton must NOT stall later
+// receipts — the batch halves down to the poisoned record, it is dropped
+// loudly (reported), and every good record still ships.
+func TestPartialRejectionSplitsAndSkips(t *testing.T) {
+	logPath, l := tempLog(t)
+	rules := []string{"good-a", "good-b", "poisoned-c", "good-d"}
+	for _, rule := range rules {
+		if _, _, err := l.Append(receipts.Record{Task: "t", Tool: "x", Rule: rule, Decision: "approve", ArgsCanonical: "{}"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	var mu sync.Mutex
+	var acceptedRules []string // every rule that reached the endpoint
+	var reports []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		has := strings.Contains(string(b), "poisoned-c")
+		n := strings.Count(string(b), `"referee.decision"`)
+		for _, rule := range rules {
+			if strings.Contains(string(b), `"`+rule+`"`) {
+				mu.Lock()
+				acceptedRules = append(acceptedRules, rule)
+				mu.Unlock()
+			}
+		}
+		if has {
+			// reject the whole batch containing the poison; tailer splits
+			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":` + fmt.Sprint(n) + `}}`))
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 20 * time.Millisecond,
+		MaxBatch: 10, Report: func(err error) { reports = append(reports, err.Error()) }}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	// every good record must ship despite the poison; the poison must be
+	// dropped with a loud report
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		seen := map[string]bool{}
+		for _, r := range acceptedRules {
+			seen[r] = true
+		}
+		mu.Unlock()
+		if seen["good-a"] && seen["good-b"] && seen["good-d"] {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	seen := map[string]bool{}
+	for _, r := range acceptedRules {
+		seen[r] = true
+	}
+	joinedReports := strings.Join(reports, "|")
+	mu.Unlock()
+	for _, good := range []string{"good-a", "good-b", "good-d"} {
+		if !seen[good] {
+			t.Fatalf("good record %s never shipped", good)
+		}
+	}
+	if !strings.Contains(joinedReports, "DROPPING it") || !strings.Contains(joinedReports, "seq 3") {
+		t.Fatalf("poisoned record (seq 3) must be reported as dropped; reports: %s", joinedReports)
+	}
+
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
 	}
 }
