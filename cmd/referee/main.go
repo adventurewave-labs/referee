@@ -63,6 +63,8 @@ func main() {
 		err = cmdTune(os.Args[2:])
 	case "export":
 		err = cmdExport(os.Args[2:])
+	case "observe":
+		err = cmdObserve(os.Args[2:])
 	case "approve":
 		err = cmdApprove(os.Args[2:])
 	case "help", "-h", "--help":

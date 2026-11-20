@@ -14,6 +14,7 @@ import (
 	"github.com/adventurewave-labs/referee/internal/keys"
 	"github.com/adventurewave-labs/referee/internal/policy"
 	"github.com/adventurewave-labs/referee/internal/receipts"
+	"github.com/adventurewave-labs/referee/internal/observe"
 	"github.com/adventurewave-labs/referee/internal/siem"
 )
 
@@ -258,6 +259,43 @@ func refuseCredentialedEndpoint(endpoint, cmd string) error {
 	}
 	if strings.Contains(endpoint, "@") {
 		return fmt.Errorf("%s: endpoint must not contain user:token@host userinfo — put credentials in $REF_SIEM_AUTH (Authorization header), not the URL", cmd)
+	}
+	return nil
+}
+
+// cmdObserve analyzes a receipt log against the policy and prints tuning
+// evidence: cost profile (probe decisions), cap gaps, unused caps, tightening
+// suggestions (PRD §12 — suggestions, not auto-remediation).
+func cmdObserve(args []string) error {
+	fs := flag.NewFlagSet("observe", flag.ExitOnError)
+	logPath := fs.String("log", "referee-receipts.jsonl", "receipt log path")
+	policyPath := fs.String("policy", "", "policy YAML (optional; enables unused-cap detection)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	entries, err := receipts.ReadAll(*logPath)
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("observe: receipt log empty — run some gated traffic first")
+		return nil
+	}
+	var pol *policy.Policy
+	if *policyPath != "" {
+		if pol, err = policy.Load(*policyPath); err != nil {
+			return err
+		}
+	}
+	rep := observe.Analyze(entries)
+	fmt.Printf("observed %d decisions across %d tools\n\n", rep.Entries, len(rep.Tools))
+	for _, ts := range rep.Tools {
+		fmt.Printf("  %-28s calls=%-4d approve=%-4d challenge=%-3d deny=%-3d probe=%d capgaps=%d\n",
+			ts.Tool, ts.Calls, ts.Approved, ts.Challenged, ts.Denied, ts.ProbeDecided, ts.CapGaps)
+	}
+	fmt.Println("\n— suggestions —")
+	for _, s := range observe.SuggestNarrowing(rep, pol) {
+		fmt.Println("  " + s)
 	}
 	return nil
 }
