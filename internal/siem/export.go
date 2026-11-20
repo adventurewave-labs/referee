@@ -434,9 +434,11 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				// retry budgets key on seq: a new history's receipts must get
 				// fresh budgets (round-74 — stale counts dropped new receipts
 				// on their first rejection)
+				t.retryMu.Lock()
 				for k := range t.singletonRetries {
 					delete(t.singletonRetries, k)
 				}
+				t.retryMu.Unlock()
 			}
 			// prune retry keys that no longer match a CURRENT entry: history
 			// changes at cursor zero (repeated first-receipt replacements)
@@ -579,6 +581,8 @@ func (t *Tailer) releaseRetries(entries []receipts.Entry, i, j int) {
 		return
 	}
 	lo, hi := entries[i].Seq, entries[j-1].Seq
+	t.retryMu.Lock()
+	defer t.retryMu.Unlock() // round-85: cleanup is lock-protected
 	for key := range t.singletonRetries {
 		sep := strings.IndexByte(key, '|')
 		if sep <= 0 {

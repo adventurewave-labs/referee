@@ -1192,3 +1192,60 @@ func TestRetryKeysPrunedOnRepeatedReplacement(t *testing.T) {
 		t.Fatalf("tailer did not stop")
 	}
 }
+
+// round-85: concurrent RetryCount readers vs releaseRetries writers — run
+// with -race in CI; any unsynchronized map access panics here.
+func TestRetryMapConcurrentAccess(t *testing.T) {
+	logPath, l := tempLog(t)
+	var recs []receipts.Record
+	for i := 0; i < 20; i++ {
+		recs = append(recs, receipts.Record{Task: "t", Tool: "x",
+			Rule: fmt.Sprintf("rejected-%d", i), Decision: "approve", ArgsCanonical: "{}"})
+	}
+	for _, r := range recs {
+		if _, _, err := l.Append(r); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// reject everything, one record at a time — maximum map churn
+		w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":99}}`))
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 5 * time.Millisecond,
+		MaxBatch: 1, MaxSingletonRetries: 1, Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	// concurrent reader hammering RetryCount while cleanup deletes
+	stopReader := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stopReader:
+				return
+			default:
+				_ = tl.RetryCount()
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && tl.RetryCount() >= 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	close(stopReader)
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
+	}
+}
