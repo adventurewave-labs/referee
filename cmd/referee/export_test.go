@@ -16,3 +16,15 @@ func TestExportRefusesQueryBearingEndpoints(t *testing.T) {
 		t.Fatalf("refusal must point at the credential channel, got %v", err)
 	}
 }
+
+// round-63: userinfo (user:token@host) is argv-visible too — refused with
+// the same credential-channel guidance.
+func TestExportRefusesUserinfoEndpoints(t *testing.T) {
+	err := cmdExport([]string{"--endpoint", "https://user:secret-token@siem.example/otlp", "--log", "/nonexistent"})
+	if err == nil {
+		t.Fatalf("userinfo endpoint must be refused")
+	}
+	if !strings.Contains(err.Error(), "REF_SIEM_AUTH") {
+		t.Fatalf("refusal must point at the credential channel, got %v", err)
+	}
+}

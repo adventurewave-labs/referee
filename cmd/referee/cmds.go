@@ -204,10 +204,10 @@ func cmdExport(args []string) error {
 		return fmt.Errorf("export: --endpoint required")
 	}
 	// the flag VALUE sits in argv (visible in process listings): refuse
-	// query-bearing endpoints and route credentials through REF_SIEM_AUTH
-	// instead (round-61)
-	if strings.Contains(*endpoint, "?") {
-		return fmt.Errorf("export: endpoint must not contain a query string — put credentials in $REF_SIEM_AUTH (Authorization header), not the URL")
+	// query-bearing and userinfo-bearing endpoints; credentials belong in
+	// REF_SIEM_AUTH (round-61/63)
+	if err := refuseCredentialedEndpoint(*endpoint, "export"); err != nil {
+		return err
 	}
 	// SIEM auth travels via env only — never argv (rig invariant; round-36:
 	// a --header k=v flag invited tokens into process listings)
@@ -233,5 +233,19 @@ func cmdExport(args []string) error {
 		return err
 	}
 	fmt.Printf("export: shipped %d entries (seq %d..%d)\n", len(batch), batch[0].Seq, batch[len(batch)-1].Seq)
+	return nil
+}
+
+// refuseCredentialedEndpoint rejects SIEM endpoint flags that carry
+// credentials: query strings and user:token@host userinfo both sit in argv,
+// where they are process-listing visible. Credentials belong in the
+// REF_SIEM_AUTH environment variable (Authorization header).
+func refuseCredentialedEndpoint(endpoint, cmd string) error {
+	if strings.Contains(endpoint, "?") {
+		return fmt.Errorf("%s: endpoint must not contain a query string — put credentials in $REF_SIEM_AUTH (Authorization header), not the URL", cmd)
+	}
+	if strings.Contains(endpoint, "@") {
+		return fmt.Errorf("%s: endpoint must not contain user:token@host userinfo — put credentials in $REF_SIEM_AUTH (Authorization header), not the URL", cmd)
+	}
 	return nil
 }
