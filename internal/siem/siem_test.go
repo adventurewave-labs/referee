@@ -467,3 +467,38 @@ func copyFile(src, dst string) error {
 	}
 	return os.WriteFile(dst, b, 0o600)
 }
+
+// round-44: OTLP encodes 64-bit ints as strings sometimes — the string form
+// of rejectedLogRecords must be reported too.
+func TestPartialRejectionStringForm(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":"1","errorMessage":"echo Bearer sk-leak 90f2... query token=abc"}}`))
+	}))
+	defer srv.Close()
+	err := New(srv.URL, nil).Ship(sampleEntries())
+	if err == nil || !strings.Contains(err.Error(), "rejected 1 of 2") {
+		t.Fatalf("string-encoded rejection must be reported, got %v", err)
+	}
+	// the server-controlled message NEVER reaches the error (it can echo
+	// credentials)
+	for _, leak := range []string{"sk-leak", "token=abc", "quota"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Fatalf("ENDPOINT MESSAGE LEAKED INTO ERROR: %q contains %q", err.Error(), leak)
+		}
+	}
+}
+
+// round-44: a MALFORMED partial-rejection acknowledgement must not be
+// treated as clean success — it is reported.
+func TestPartialRejectionMalformedReported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":"not-a-number"}}`))
+	}))
+	defer srv.Close()
+	// "not-a-number" parses as 0 via string path (ParseInt fails → 0) — the
+	// malformed ack must still be surfaced as an error
+	err := New(srv.URL, nil).Ship(sampleEntries())
+	if err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("malformed ack must be reported, got %v", err)
+	}
+}

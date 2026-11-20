@@ -19,6 +19,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -183,17 +184,49 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 	}
 	// partial rejection: HTTP 200 with rejectedLogRecords > 0 means some
 	// records were dropped — report it so the caller holds the cursor (the
-	// SIEM pipeline may accept them on retry; silent loss is not acceptable)
+	// SIEM pipeline may accept them on retry; silent loss is not acceptable).
+	// OTLP encodes 64-bit integers as EITHER numbers OR strings — parse both.
 	var ack struct {
 		PartialSuccess struct {
-			RejectedLogRecords  int    `json:"rejectedLogRecords"`
-			ErrorMessage        string `json:"errorMessage"`
+			RejectedLogRecords json.RawMessage `json:"rejectedLogRecords"`
 		} `json:"partialSuccess"`
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ack); err == nil &&
-		ack.PartialSuccess.RejectedLogRecords > 0 {
-		return fmt.Errorf("siem: endpoint rejected %d of %d records: %s",
-			ack.PartialSuccess.RejectedLogRecords, len(entries), ack.PartialSuccess.ErrorMessage)
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if rerr == nil && len(strings.TrimSpace(string(body))) == 0 {
+		return nil // empty 200 body: implicit full success
+	}
+	var rejected int
+	malformed := false
+	if rerr != nil || json.Unmarshal(body, &ack) != nil ||
+		len(ack.PartialSuccess.RejectedLogRecords) == 0 {
+		// body present but undecodable, or ack without the rejection field:
+		// not a clean success (round-44)
+		malformed = true
+	} else {
+		raw := []byte(ack.PartialSuccess.RejectedLogRecords)
+		if len(raw) > 0 && raw[0] == '"' {
+			// OTLP string encoding of a 64-bit integer
+			var strVal string
+			if json.Unmarshal(raw, &strVal) == nil {
+				if n, perr := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); perr == nil {
+					rejected = int(n)
+				} else {
+					malformed = true
+				}
+			} else {
+				malformed = true
+			}
+		} else if json.Unmarshal(raw, &rejected) != nil {
+			malformed = true
+		}
+	}
+	if malformed {
+		return fmt.Errorf("siem: malformed partial-rejection acknowledgement")
+	}
+	if rejected > 0 {
+		// the endpoint-controlled message is NOT included: the response body
+		// is attacker-controlled and can echo credentials
+		return fmt.Errorf("siem: endpoint rejected %d of %d records (cursor held; retrying)", rejected, len(entries))
 	}
 	return nil
 }
