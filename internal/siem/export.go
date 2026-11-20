@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"io"
 	"net/url"
 	"os"
 	"strings"
@@ -180,6 +181,20 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("siem: endpoint returned %d", resp.StatusCode)
 	}
+	// partial rejection: HTTP 200 with rejectedLogRecords > 0 means some
+	// records were dropped — report it so the caller holds the cursor (the
+	// SIEM pipeline may accept them on retry; silent loss is not acceptable)
+	var ack struct {
+		PartialSuccess struct {
+			RejectedLogRecords  int    `json:"rejectedLogRecords"`
+			ErrorMessage        string `json:"errorMessage"`
+		} `json:"partialSuccess"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&ack); err == nil &&
+		ack.PartialSuccess.RejectedLogRecords > 0 {
+		return fmt.Errorf("siem: endpoint rejected %d of %d records: %s",
+			ack.PartialSuccess.RejectedLogRecords, len(entries), ack.PartialSuccess.ErrorMessage)
+	}
 	return nil
 }
 
@@ -244,7 +259,11 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 		case <-ctx.Done():
 		}
 	}()
-	shipped := 0 // in-memory cursor: number of entries already exported
+	shipped := 0    // in-memory cursor: number of entries already exported
+	lastHash := ""  // hash of the last shipped entry — a replaced/truncated
+	// log with a different history resets the cursor (re-export; SIEM
+	// dedupes on referee.seq) rather than silently skipping new receipts
+	// (round-42)
 	tick := time.NewTicker(t.Interval)
 	defer tick.Stop()
 	for {
@@ -264,6 +283,15 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 					t.Report(fmt.Errorf("siem: log read: %w", err))
 				}
 				continue
+			}
+			// replacement/truncation detection: if the entry at the cursor
+			// is no longer the one we shipped last, the file changed history
+			if shipped > 0 && (shipped > len(entries) || entries[shipped-1].Hash != lastHash) {
+				if t.Report != nil {
+					t.Report(fmt.Errorf("siem: log replaced or truncated — cursor reset (re-exporting %d entries)", len(entries)))
+				}
+				shipped = 0
+				lastHash = ""
 			}
 			if len(entries) <= shipped {
 				continue
@@ -289,6 +317,7 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 					break // retry the same cursor next tick (best-effort)
 				}
 				shipped = end
+				lastHash = entries[shipped-1].Hash
 			}
 		}
 	}

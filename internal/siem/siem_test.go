@@ -1,6 +1,7 @@
 package siem
 
 import (
+	"os"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -382,4 +383,87 @@ func TestTailerStopsMidBacklog(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("shutdown took %s — cancellation did not reach the in-flight request", elapsed)
 	}
+}
+
+// round-42: HTTP 200 with partialSuccess.rejectedLogRecords > 0 must be
+// reported as an error — silent loss is not acceptable.
+func TestPartialRejectionReported(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// full OTLP ack: accepted nothing of the two records
+		w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":2,"errorMessage":"quota"}}`))
+	}))
+	defer srv.Close()
+	err := New(srv.URL, nil).Ship(sampleEntries())
+	if err == nil || !strings.Contains(err.Error(), "rejected 2 of 2") {
+		t.Fatalf("partial rejection must be reported, got %v", err)
+	}
+}
+
+// round-42: a replaced/truncated log resets the cursor — new receipts ship
+// instead of being skipped by the stale count-based cursor.
+func TestTailerResetsCursorOnLogReplacement(t *testing.T) {
+	logPath, l := tempLog(t)
+	l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "r1", Decision: "approve", ArgsCanonical: "{}"})
+	l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "r2", Decision: "approve", ArgsCanonical: "{}"})
+
+	rec := &bodyRecorder{}
+	srv := httptest.NewServer(rec.handler())
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 25 * time.Millisecond,
+		Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	// both original entries ship (2 records in one batch)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(rec.body(), `"stringValue":"r2"`) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(rec.body(), `"stringValue":"r2"`) {
+		t.Fatalf("original entries never shipped")
+	}
+
+	// REPLACE the log with a different self-consistent chain: the count-
+	// based cursor would skip everything (its history is unrelated)
+	alt := filepath.Join(t.TempDir(), "alt.jsonl")
+	l2, err := receipts.Open(alt, "", []byte("siem-test-key"), nil, 100)
+	if err != nil {
+		t.Fatalf("alt log: %v", err)
+	}
+	l2.Append(receipts.Record{Task: "t", Tool: "x", Rule: "replaced-a", Decision: "approve", ArgsCanonical: "{}"})
+	l2.Append(receipts.Record{Task: "t", Tool: "x", Rule: "replaced-b", Decision: "deny", ArgsCanonical: "{}"})
+	if _, _, err := receipts.Verify(alt, "", nil); err != nil {
+		t.Fatalf("alt chain: %v", err)
+	}
+	if werr := copyFile(alt, logPath); werr != nil {
+		t.Fatalf("replace: %v", werr)
+	}
+
+	// the tailer must reset and re-export — the new history's rules appear
+	for time.Now().Before(deadline.Add(2 * time.Second)) && !strings.Contains(rec.body(), "replaced-b") {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !strings.Contains(rec.body(), "replaced-b") {
+		t.Fatalf("log replacement was not detected — new receipts skipped")
+	}
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
+	}
+}
+
+func copyFile(src, dst string) error {
+	b, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, b, 0o600)
 }
