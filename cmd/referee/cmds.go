@@ -229,10 +229,22 @@ func cmdExport(args []string) error {
 		fmt.Println("export: nothing to ship at or after seq", *seqStart)
 		return nil
 	}
-	if err := siem.New(*endpoint, hdr).Ship(batch); err != nil {
-		return err
+	// bounded batches (as the Tailer does): a large backlog must drain in
+	// many POSTs, never one that outlives every client timeout
+	x := siem.New(*endpoint, hdr)
+	const batchSize = 500
+	shipped := 0
+	for shipped < len(batch) {
+		end := shipped + batchSize
+		if end > len(batch) {
+			end = len(batch)
+		}
+		if err := x.Ship(batch[shipped:end]); err != nil {
+			return fmt.Errorf("export: shipped %d of %d entries before failing: %w", shipped, len(batch), err)
+		}
+		shipped = end
 	}
-	fmt.Printf("export: shipped %d entries (seq %d..%d)\n", len(batch), batch[0].Seq, batch[len(batch)-1].Seq)
+	fmt.Printf("export: shipped %d entries (seq %d..%d) to the endpoint\n", len(batch), batch[0].Seq, batch[len(batch)-1].Seq)
 	return nil
 }
 
