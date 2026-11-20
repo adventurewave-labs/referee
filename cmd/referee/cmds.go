@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/adventurewave-labs/referee/internal/demo"
 	"github.com/adventurewave-labs/referee/internal/keys"
 	"github.com/adventurewave-labs/referee/internal/policy"
 	"github.com/adventurewave-labs/referee/internal/receipts"
+	"github.com/adventurewave-labs/referee/internal/siem"
 )
 
 func cmdVerify(args []string) error {
@@ -185,4 +187,77 @@ func cmdApprove(args []string) error {
 
 func runDemo(w *os.File) error {
 	return demo.Run(w)
+}
+
+// cmdExport ships receipt-log entries to an OTLP/HTTP SIEM endpoint
+// (PRD §6 P1). One-shot: entries from --seq-start (default all) ship once;
+// use serve --siem-endpoint for continuous tailing.
+func cmdExport(args []string) error {
+	fs := flag.NewFlagSet("export", flag.ExitOnError)
+	logPath := fs.String("log", "referee-receipts.jsonl", "receipt log path")
+	endpoint := fs.String("endpoint", "", "OTLP/HTTP base URL (required, e.g. http://siem:4318)")
+	seqStart := fs.Int("seq-start", 1, "first seq to export (1 = all)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *endpoint == "" {
+		return fmt.Errorf("export: --endpoint required")
+	}
+	// the flag VALUE sits in argv (visible in process listings): refuse
+	// query-bearing and userinfo-bearing endpoints; credentials belong in
+	// REF_SIEM_AUTH (round-61/63)
+	if err := refuseCredentialedEndpoint(*endpoint, "export"); err != nil {
+		return err
+	}
+	// SIEM auth travels via env only — never argv (rig invariant; round-36:
+	// a --header k=v flag invited tokens into process listings)
+	var hdr map[string]string
+	if v := os.Getenv("REF_SIEM_AUTH"); v != "" {
+		hdr = map[string]string{"Authorization": v}
+	}
+	entries, err := receipts.ReadAll(*logPath)
+	if err != nil {
+		return err
+	}
+	var batch []receipts.Entry
+	for _, e := range entries {
+		if int(e.Seq) >= *seqStart {
+			batch = append(batch, e)
+		}
+	}
+	if len(batch) == 0 {
+		fmt.Println("export: nothing to ship at or after seq", *seqStart)
+		return nil
+	}
+	// bounded batches (as the Tailer does): a large backlog must drain in
+	// many POSTs, never one that outlives every client timeout
+	x := siem.New(*endpoint, hdr)
+	const batchSize = 500
+	shipped := 0
+	for shipped < len(batch) {
+		end := shipped + batchSize
+		if end > len(batch) {
+			end = len(batch)
+		}
+		if err := x.Ship(batch[shipped:end]); err != nil {
+			return fmt.Errorf("export: shipped %d of %d entries before failing: %w", shipped, len(batch), err)
+		}
+		shipped = end
+	}
+	fmt.Printf("export: shipped %d entries (seq %d..%d) to the endpoint\n", len(batch), batch[0].Seq, batch[len(batch)-1].Seq)
+	return nil
+}
+
+// refuseCredentialedEndpoint rejects SIEM endpoint flags that carry
+// credentials: query strings and user:token@host userinfo both sit in argv,
+// where they are process-listing visible. Credentials belong in the
+// REF_SIEM_AUTH environment variable (Authorization header).
+func refuseCredentialedEndpoint(endpoint, cmd string) error {
+	if strings.Contains(endpoint, "?") {
+		return fmt.Errorf("%s: endpoint must not contain a query string — put credentials in $REF_SIEM_AUTH (Authorization header), not the URL", cmd)
+	}
+	if strings.Contains(endpoint, "@") {
+		return fmt.Errorf("%s: endpoint must not contain user:token@host userinfo — put credentials in $REF_SIEM_AUTH (Authorization header), not the URL", cmd)
+	}
+	return nil
 }

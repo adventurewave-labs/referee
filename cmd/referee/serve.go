@@ -20,6 +20,7 @@ import (
 	"github.com/adventurewave-labs/referee/internal/probe"
 	"github.com/adventurewave-labs/referee/internal/proxy"
 	"github.com/adventurewave-labs/referee/internal/receipts"
+	"github.com/adventurewave-labs/referee/internal/siem"
 )
 
 func cmdServe(args []string) error {
@@ -39,6 +40,7 @@ func cmdServe(args []string) error {
 	challengeTimeout := fs.Duration("challenge-timeout", 5*time.Minute, "challenge deadline (timeout = default deny)")
 	slackChannel := fs.String("slack-channel", "", "slack channel for challenges")
 	slackHook := fs.String("slack-hook-addr", "127.0.0.1:8201", "listen address for slack interactive endpoint")
+	siemEndpoint := fs.String("siem-endpoint", "", "OTLP/HTTP base URL: continuously tail receipts to the SIEM (best-effort)")
 	dashAddr := fs.String("dashboard", "", "dashboard address (local challenge mode defaults to 127.0.0.1:8200)")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -128,6 +130,28 @@ func cmdServe(args []string) error {
 	}
 	registry := proxy.NewRegistry()
 	registry.WithAlive(func(task string) bool { return eng.Caps.Get(task) != nil })
+
+	// SIEM tailer (§6 P1): best-effort export of every new receipt; SIEM
+	// availability never influences gate behavior — failures are logged, the
+	// receipt log on disk stays the source of truth.
+	if err := refuseCredentialedEndpoint(*siemEndpoint, "serve"); err != nil {
+		return err
+	}
+	if *siemEndpoint != "" {
+		// auth via env only (round-39): REF_SIEM_AUTH carries the full
+		// Authorization value; the endpoint URL is never logged (it may
+		// carry query-string tokens)
+		var hdr map[string]string
+		if v := os.Getenv("REF_SIEM_AUTH"); v != "" {
+			hdr = map[string]string{"Authorization": v}
+		}
+		tl := &siem.Tailer{Log: siem.New(*siemEndpoint, hdr), LogPath: *logPath, Interval: 5 * time.Second,
+			Report: func(err error) { logger.Printf("siem: export failed (will retry): %v", err) }}
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() { _ = tl.Run(stop) }()
+		logger.Printf("siem export: tailing %s (endpoint configured, details not logged)", *logPath)
+	}
 	dash := dashboard.New(dashboard.Deps{
 		LogPath: *logPath, HeadsPath: *headsPath, PubKey: pub, Token: dashToken,
 		ReceiptsKey: hmacKey, Challenges: mgr,

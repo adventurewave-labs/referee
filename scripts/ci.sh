@@ -13,9 +13,9 @@ if ! command -v go >/dev/null 2>&1; then
   echo "installing go${GO_VERSION} (${ARCH}) to /tmp/gotc"
   mkdir -p /tmp/gotc
   curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -o /tmp/gotc/go.tgz
-  rm -rf /tmp/gotc/go
-  tar -C /tmp/gotc -xzf /tmp/gotc/go.tgz
-  export PATH="/tmp/gotc/go/bin:$PATH"
+  mkdir -p /tmp/gotc/go-x
+  tar -C /tmp/gotc/go-x --strip-components=1 -xzf /tmp/gotc/go.tgz
+  export PATH="/tmp/gotc/go-x/bin:$PATH"
 fi
 
 mkdir -p remote-out
@@ -24,7 +24,7 @@ go mod tidy
 go vet ./...
 go build ./...
 echo "--- test ---"
-go test ./... 2>&1 | tee remote-out/test.log
+go test -race -timeout 120s ./... 2>&1 | tee remote-out/test.log
 echo "--- bench (containment path budget) ---"
 go test -run '^$' -bench BenchmarkGateContainment -benchtime 1s ./internal/gate/ 2>&1 | tee remote-out/bench.log
 cp -f go.mod go.sum remote-out/ 2>/dev/null || true
