@@ -321,6 +321,9 @@ func (m taskClassMap) Set(v string) error {
 	if len(parts) != 2 {
 		return fmt.Errorf("task-class wants task-id=class, got %q", v)
 	}
+	if strings.TrimSpace(parts[1]) == "" {
+		return fmt.Errorf("task-class: class value must not be empty (task %q) — empty classes hide grants", parts[0])
+	}
 	m[parts[0]] = parts[1]
 	return nil
 }

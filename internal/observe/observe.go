@@ -123,7 +123,9 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 	mappedApproved, unknownApproved := 0, 0
 	for _, e := range entries {
 		if e.Decision == "approve" {
-			if _, ok := taskClasses[e.Task]; ok {
+			// an empty class value is UNMAPPED: usage recorded under ""
+			// hides real grants and recommends pruning them (round-78)
+			if cls, ok := taskClasses[e.Task]; ok && cls != "" {
 				mappedApproved++
 			} else {
 				unknownApproved++
@@ -145,6 +147,9 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 		class, ok := taskClasses[e.Task]
 		if !ok {
 			continue
+		}
+		if class == "" {
+			continue // empty class values never attribute usage (round-78)
 		}
 		if exercised[class] == nil {
 			exercised[class] = map[string]bool{}

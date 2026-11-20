@@ -245,3 +245,39 @@ func TestPartialAttributionSuppressesUnused(t *testing.T) {
 		t.Fatalf("partial attribution must surface the completeness note: %s", joined)
 	}
 }
+
+// round-78: an EMPTY class value behaves as unmapped — usage recorded under
+// "" must not hide the real class's grant.
+func TestEmptyClassValueUnmapped(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "deploy",
+			Caps:  []policy.CapDecl{{Tool: "granted", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "t", Tool: "granted",
+			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+	}
+	rep := Analyze(entries)
+	// mapping "t" → "" (empty): the approved call is UNMAPPED, so no unused
+	// conclusion is supportable — the guard suppresses with the note, and
+	// the deploy grant is NOT flagged for pruning (fail-safe direction)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": ""})
+	joined := strings.Join(sugg, "\n")
+	if strings.Contains(joined, "UNUSED? task deploy") {
+		t.Fatalf("empty-class mapping must not produce unused conclusions: %s", joined)
+	}
+	if !strings.Contains(joined, "unmapped tasks") {
+		t.Fatalf("completeness note must report the unmapped approved call: %s", joined)
+	}
+	// with a REAL mapping the grant is exercised and not flagged
+	sugg2 := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "deploy"})
+	for _, s := range sugg2 {
+		if strings.Contains(s, "UNUSED? task deploy") {
+			t.Fatalf("real mapping must exercise the grant: %v", sugg2)
+		}
+	}
+}
