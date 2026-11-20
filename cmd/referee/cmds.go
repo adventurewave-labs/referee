@@ -275,9 +275,14 @@ func cmdObserve(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// read ONCE, verify THAT exact slice: verify-then-reread has a TOCTOU
+	// gap (the file can change between reads — round-81, codex)
 	entries, err := receipts.ReadAll(*logPath)
 	if err != nil {
 		return err
+	}
+	if err := receipts.VerifyEntries(entries); err != nil {
+		return fmt.Errorf("observe: receipt log failed verification: %w", err)
 	}
 	if len(entries) == 0 {
 		fmt.Println("observe: receipt log empty — run some gated traffic first")
@@ -323,6 +328,14 @@ func (m taskClassMap) Set(v string) error {
 	}
 	if strings.TrimSpace(parts[1]) == "" {
 		return fmt.Errorf("task-class: class value must not be empty (task %q) — empty classes hide grants", parts[0])
+	}
+	if strings.TrimSpace(parts[0]) == "" {
+		return fmt.Errorf("task-class: task id must not be empty")
+	}
+	if prev, dup := m[parts[0]]; dup && prev != parts[1] {
+		// conflicting duplicates misattribute approvals and falsely mark the
+		// actual class's grants unused (round-81)
+		return fmt.Errorf("task-class: conflicting mapping for task %q (%q vs %q) — pass one mapping", parts[0], prev, parts[1])
 	}
 	m[parts[0]] = parts[1]
 	return nil

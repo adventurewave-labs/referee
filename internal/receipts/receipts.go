@@ -428,3 +428,8 @@ func Search(path, task, tool, decision, rule string) ([]Entry, error) {
 	}
 	return out, nil
 }
+
+// VerifyEntries validates a parsed entry slice in memory: seq continuity and
+// hash links. Used by callers that read the log once and want analysis to
+// run on the SAME verified snapshot (no TOCTOU re-read).
+func VerifyEntries(entries []Entry) error { return checkChain(entries) }

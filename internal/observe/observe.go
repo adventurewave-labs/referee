@@ -132,6 +132,30 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 			}
 		}
 	}
+	// task-class VALUES must exist in the policy: a typo'd class would hide
+	// real usage and recommend pruning in-use grants (round-79)
+	knownClasses := map[string]bool{}
+	if pol != nil {
+		for _, tc := range pol.Tasks {
+			knownClasses[tc.Class] = true
+		}
+	}
+	unknownClasses := map[string]bool{}
+	for _, cls := range taskClasses {
+		if cls != "" && pol != nil && !knownClasses[cls] {
+			unknownClasses[cls] = true
+		}
+	}
+	if len(unknownClasses) > 0 {
+		names := make([]string, 0, len(unknownClasses))
+		for c := range unknownClasses {
+			names = append(names, `"`+c+`"`)
+		}
+		sort.Strings(names)
+		out = append(out, fmt.Sprintf(
+			"INFO: task-class attribution references classes not in the policy: %s — fix the mapping; skipping unused-cap suggestions", strings.Join(names, ", ")))
+		return out
+	}
 	if taskClasses == nil || len(taskClasses) == 0 || mappedApproved == 0 || unknownApproved > 0 {
 		out = append(out, fmt.Sprintf(
 			"INFO: unused-cap detection needs COMPLETE task-class attribution — %d approved call(s) have unmapped tasks; pass taskClasses (task-id → class) covering every approved receipt; skipping unused-cap suggestions", unknownApproved))
@@ -159,11 +183,18 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 		}
 	}
 	if pol != nil {
+		// usage is tracked per (class, tool) — caps are distinguished by
+		// tool AND pattern, so per-pattern unused detection needs the call's
+		// scope value, which receipts don't record (they HMAC args). v1
+		// therefore flags a (class, tool) grant as unused only when NO
+		// approved call for that tool exists in the class; per-pattern
+		// narrowing within a used tool requires scope attribution (future:
+		// record the effective scope on the receipt).
 		for _, tc := range pol.Tasks {
 			for _, c := range tc.Caps {
 				if !exercised[tc.Class][c.Tool] {
 					out = append(out, fmt.Sprintf(
-						"UNUSED? task %s grants %s (pattern %s) — no APPROVED call exercised it in this class; prune or verify intent", tc.Class, c.Tool, c.Pattern))
+						"UNUSED? task %s grants %s (pattern %s) — no APPROVED call exercised this tool in this class; per-pattern pruning needs scope attribution on receipts (future)", tc.Class, c.Tool, c.Pattern))
 				}
 			}
 		}
