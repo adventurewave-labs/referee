@@ -1208,29 +1208,49 @@ func TestRetryMapConcurrentAccess(t *testing.T) {
 		}
 	}
 
-	// plausible per-singleton rejections: Populates retry state on the first
-	// rejection, then accepts — so retry-map WRITES (populate + cleanup
-	// delete) happen under concurrent readers, which is the race this test
-	// exists to catch.
+	// each receipt is rejected ONCE, then accepted — so releaseRetries
+	// cleanup genuinely runs (map populate → delete) while concurrent
+	// RetryCount readers hammer the same map. Race detector catches any
+	// unsynchronized access; the final assertions catch lost cleanups.
 	var mu sync.Mutex
-	var accepts int
+	rejectedOnce := map[string]bool{}
+	var accepted []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		var rule string
+		for _, rr := range recs {
+			if strings.Contains(string(b), `"`+rr.Rule+`"`) {
+				rule = rr.Rule
+				break
+			}
+		}
+		if rule == "" {
+			w.WriteHeader(200)
+			return
+		}
 		mu.Lock()
-		accepts++
-		mu.Unlock()
+		defer mu.Unlock()
+		if !rejectedOnce[rule] {
+			rejectedOnce[rule] = true
+			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+			return
+		}
+		accepted = append(accepted, rule)
+		w.WriteHeader(200)
 	}))
 	defer srv.Close()
 
 	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 5 * time.Millisecond,
-		MaxBatch: 1, MaxSingletonRetries: 1, Report: func(err error) {}}
+		MaxBatch: 1, MaxSingletonRetries: 3, Report: func(err error) {}}
 	stop := make(chan struct{})
 	done := make(chan error, 1)
 	go func() { done <- tl.Run(stop) }()
 
 	// concurrent reader hammering RetryCount while populate+cleanup mutate
 	stopReader := make(chan struct{})
+	readerDone := make(chan struct{})
 	go func() {
+		defer close(readerDone)
 		for {
 			select {
 			case <-stopReader:
@@ -1241,26 +1261,18 @@ func TestRetryMapConcurrentAccess(t *testing.T) {
 		}
 	}()
 
-	// wait for real churn: every entry rejected once then accepted
-	deadline := time.Now().Add(5 * time.Second)
+	// wait for all 20 receipts to be accepted (each survived one rejection:
+	// 20 populate→cleanup cycles under the concurrent reader)
+	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		mu.Lock()
-		ok := accepts >= 20
+		ok := len(accepted) >= 20
 		mu.Unlock()
 		if ok {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	mu.Lock()
-	acceptedCount := accepts
-	mu.Unlock()
-	if acceptedCount < 20 {
-		close(stopReader)
-		close(stop)
-		t.Fatalf("churn never reached 20 accepted records, got %d", acceptedCount)
-	}
-
 	close(stopReader)
 	close(stop)
 	select {
@@ -1271,4 +1283,16 @@ func TestRetryMapConcurrentAccess(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatalf("tailer did not stop")
 	}
+
+	mu.Lock()
+	acceptedN := len(accepted)
+	mu.Unlock()
+	if acceptedN < 20 {
+		t.Fatalf("only %d of 20 receipts accepted — cleanup path under-exercised", acceptedN)
+	}
+	// ALL retry state must be cleaned: accepted receipts released their keys
+	if got := tl.RetryCount(); got != 0 {
+		t.Fatalf("retry bookkeeping not drained after acceptance: %d keys", got)
+	}
 }
+
