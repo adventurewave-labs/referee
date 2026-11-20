@@ -110,3 +110,54 @@ func TestMinCleanCallsGuard(t *testing.T) {
 		}
 	}
 }
+
+// gate finding: a cap:missing DENIAL must not mark the tool as exercising
+// its caps — the denial demonstrates no cap was exercised.
+func TestSuggestNarrowingDeniedCallsNotExercised(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps:  []policy.CapDecl{{Tool: "denied_tool", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		entry(1, "denied_tool", "cap:missing", "deny", "unchecked"),
+		entry(2, "denied_tool", "cap:missing", "deny", "unchecked"),
+	}
+	rep := Analyze(entries)
+	joined := strings.Join(SuggestNarrowing(rep, pol), "\n")
+	if !strings.Contains(joined, "UNUSED? task ops grants denied_tool") {
+		t.Fatalf("denied-only tool must still be flagged unused: %s", joined)
+	}
+}
+
+// multiple grants sharing one tool: approval of the tool exercises ALL its
+// caps in v1 (scope-level tracking is future work) — but a tool with zero
+// approvals stays unused even when OTHER tools were approved.
+func TestSuggestNarrowingSharedToolGrants(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps: []policy.CapDecl{
+				{Tool: "shared_tool", Pattern: "/a/**"},
+				{Tool: "shared_tool", Pattern: "/b/**"},
+				{Tool: "idle_tool", Pattern: "**"},
+			},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		entry(1, "shared_tool", "auto:clean", "approve", "integrity=pass conf=pass"),
+	}
+	rep := Analyze(entries)
+	joined := strings.Join(SuggestNarrowing(rep, pol), "\n")
+	if strings.Contains(joined, "grants shared_tool") {
+		t.Fatalf("approved tool must not be flagged unused: %s", joined)
+	}
+	if !strings.Contains(joined, "grants idle_tool") {
+		t.Fatalf("idle tool must be flagged: %s", joined)
+	}
+}

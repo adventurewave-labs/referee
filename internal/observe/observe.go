@@ -103,11 +103,14 @@ func SuggestNarrowing(rep Report, pol *policy.Policy) []string {
 				"CAP GAP? %s: %d cap-missing denials — grant an explicit cap in the task class or accept the posture deliberately", ts.Tool, ts.CapGaps))
 		}
 	}
-	// never-used caps: walk the policy's task-class caps, check which
-	// tools the receipts actually exercised
+	// never-used caps: "exercised" means an APPROVED call — a cap:missing
+	// denial demonstrates the opposite (no cap was exercised), and
+	// challenges don't confirm usage either (round-N gate finding)
 	exercised := map[string]bool{}
 	for _, ts := range rep.Tools {
-		exercised[ts.Tool] = true
+		if ts.Approved > 0 {
+			exercised[ts.Tool] = true
+		}
 	}
 	if pol != nil {
 		for _, tc := range pol.Tasks {
