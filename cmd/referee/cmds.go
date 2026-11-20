@@ -270,6 +270,8 @@ func cmdObserve(args []string) error {
 	fs := flag.NewFlagSet("observe", flag.ExitOnError)
 	logPath := fs.String("log", "referee-receipts.jsonl", "receipt log path")
 	policyPath := fs.String("policy", "", "policy YAML (optional; enables unused-cap detection)")
+	taskClasses := map[string]string{}
+	fs.Var(taskClassMap(taskClasses), "task-class", "task-id=class attribution (repeatable; REQUIRED for unused-cap detection)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -294,8 +296,31 @@ func cmdObserve(args []string) error {
 			ts.Tool, ts.Calls, ts.Approved, ts.Challenged, ts.Denied, ts.ProbeDecided, ts.CapGaps)
 	}
 	fmt.Println("\n— suggestions —")
-	for _, s := range observe.SuggestNarrowing(rep, pol) {
+	for _, s := range observe.SuggestNarrowingWithTasks(rep, pol, entries, taskClasses) {
 		fmt.Println("  " + s)
 	}
+	return nil
+}
+
+// taskClassMap implements flag.Value accumulating task-id=class pairs.
+type taskClassMap map[string]string
+
+func (m taskClassMap) String() string {
+	if m == nil {
+		return ""
+	}
+	var out []string
+	for k, v := range m {
+		out = append(out, k+"="+v)
+	}
+	return strings.Join(out, ",")
+}
+
+func (m taskClassMap) Set(v string) error {
+	parts := strings.SplitN(v, "=", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("task-class wants task-id=class, got %q", v)
+	}
+	m[parts[0]] = parts[1]
 	return nil
 }

@@ -128,8 +128,10 @@ func TestSuggestNarrowingDeniedCallsNotExercised(t *testing.T) {
 	}
 	rep := Analyze(entries)
 	joined := strings.Join(SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}), "\n")
-	if !strings.Contains(joined, "UNUSED? task ops grants denied_tool") {
-		t.Fatalf("denied-only tool must still be flagged unused: %s", joined)
+	// the CAP GAP suggestion is the signal here; unused-flagging is NOT
+	// expected (a denied-only corpus proves no grant was exercised)
+	if !strings.Contains(joined, "CAP GAP? denied_tool") {
+		t.Fatalf("cap-gap suggestion must fire: %s", joined)
 	}
 }
 
@@ -210,5 +212,36 @@ func TestPerClassAttribution(t *testing.T) {
 	}
 	if !strings.Contains(joined, "task deploy grants shared") {
 		t.Fatalf("deploy-class grant of a research-only tool must be flagged unused: %s", joined)
+	}
+}
+
+// round-N: a PARTIAL attribution map (approved receipts whose task is absent)
+// must suppress unused conclusions — unknown-class receipts prove nothing.
+func TestPartialAttributionSuppressesUnused(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps:  []policy.CapDecl{{Tool: "granted", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	// one approved receipt mapped, one approved receipt of UNKNOWN task
+	// whose TOOL overlaps the grant — the unknown-class call could have
+	// exercised it, so no unused conclusion is supportable
+	entries := []receipts.Entry{
+		{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "known", Tool: "other",
+			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+		{Seq: 2, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "unknown-task", Tool: "granted",
+			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+	}
+	rep := Analyze(entries)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"known": "ops"})
+	joined := strings.Join(sugg, "\n")
+	if strings.Contains(joined, "UNUSED?") {
+		t.Fatalf("partial attribution must suppress unused conclusions: %s", joined)
+	}
+	if !strings.Contains(joined, "COMPLETE task-class attribution") {
+		t.Fatalf("partial attribution must surface the completeness note: %s", joined)
 	}
 }

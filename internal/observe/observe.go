@@ -116,8 +116,23 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 	// degrades honestly: no unused-cap suggestions, just a note (round-2
 	// gate finding: a tool approved in one class must not hide unused
 	// grants of it in every other).
-	if taskClasses == nil {
-		out = append(out, "INFO: unused-cap detection needs task-class attribution — pass taskClasses (task-id → class); skipping unused-cap suggestions")
+	// Attribution must be COMPLETE: a nil/empty map, no mapped approved
+	// receipts, or approved receipts whose task is absent from the map all
+	// make "unused" conclusions unsupportable — an approved call of unknown
+	// class may have exercised ANY grant (round-N gate finding).
+	mappedApproved, unknownApproved := 0, 0
+	for _, e := range entries {
+		if e.Decision == "approve" {
+			if _, ok := taskClasses[e.Task]; ok {
+				mappedApproved++
+			} else {
+				unknownApproved++
+			}
+		}
+	}
+	if taskClasses == nil || len(taskClasses) == 0 || mappedApproved == 0 || unknownApproved > 0 {
+		out = append(out, fmt.Sprintf(
+			"INFO: unused-cap detection needs COMPLETE task-class attribution — %d approved call(s) have unmapped tasks; pass taskClasses (task-id → class) covering every approved receipt; skipping unused-cap suggestions", unknownApproved))
 		return out
 	}
 	exercised := map[string]map[string]bool{} // class → tool → approved?
