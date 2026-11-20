@@ -557,3 +557,17 @@ func TestNullAndNegativeRejectionCountsMalformed(t *testing.T) {
 		}
 	}
 }
+
+// round-51: oversized acks are rejected explicitly — a silently truncated
+// prefix can parse as valid JSON and accept malformed acknowledgements.
+func TestOversizedAckRejected(t *testing.T) {
+	junk := strings.Repeat("x", 1<<20+16) // > 1MB cap
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(junk))
+	}))
+	defer srv.Close()
+	err := New(srv.URL, nil).Ship(sampleEntries())
+	if err == nil || !strings.Contains(err.Error(), "ack exceeds") {
+		t.Fatalf("oversized ack must be rejected, got %v", err)
+	}
+}

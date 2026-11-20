@@ -199,9 +199,16 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 			RejectedLogRecords json.RawMessage `json:"rejectedLogRecords"`
 		} `json:"partialSuccess"`
 	}
-	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// read one byte past the cap: an oversized ack is rejected explicitly
+	// rather than silently truncated (a truncated prefix can parse as valid
+	// JSON and accept malformed acknowledgements — round-51)
+	const ackCap = 1 << 20
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, ackCap+1))
 	if rerr != nil {
 		return fmt.Errorf("siem: read ack: %v", rerr)
+	}
+	if len(body) > ackCap {
+		return fmt.Errorf("siem: ack exceeds %d bytes — rejected", ackCap)
 	}
 	trimmed := strings.TrimSpace(string(body))
 	if trimmed == "" {
