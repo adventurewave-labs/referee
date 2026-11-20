@@ -1208,9 +1208,17 @@ func TestRetryMapConcurrentAccess(t *testing.T) {
 		}
 	}
 
+	// plausible per-singleton rejections: Populates retry state on the first
+	// rejection, then accepts — so retry-map WRITES (populate + cleanup
+	// delete) happen under concurrent readers, which is the race this test
+	// exists to catch.
+	var mu sync.Mutex
+	var accepts int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// reject everything, one record at a time — maximum map churn
-		w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":99}}`))
+		w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+		mu.Lock()
+		accepts++
+		mu.Unlock()
 	}))
 	defer srv.Close()
 
@@ -1220,7 +1228,7 @@ func TestRetryMapConcurrentAccess(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- tl.Run(stop) }()
 
-	// concurrent reader hammering RetryCount while cleanup deletes
+	// concurrent reader hammering RetryCount while populate+cleanup mutate
 	stopReader := make(chan struct{})
 	go func() {
 		for {
@@ -1233,9 +1241,24 @@ func TestRetryMapConcurrentAccess(t *testing.T) {
 		}
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && tl.RetryCount() >= 0 {
-		time.Sleep(50 * time.Millisecond)
+	// wait for real churn: every entry rejected once then accepted
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		ok := accepts >= 20
+		mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	acceptedCount := accepts
+	mu.Unlock()
+	if acceptedCount < 20 {
+		close(stopReader)
+		close(stop)
+		t.Fatalf("churn never reached 20 accepted records, got %d", acceptedCount)
 	}
 
 	close(stopReader)
