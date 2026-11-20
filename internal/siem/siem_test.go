@@ -1131,3 +1131,64 @@ func TestReplacementWhileCursorZero(t *testing.T) {
 		t.Fatalf("replacement receipt was dropped on stale budget (rejects=%d accepts=%d)", rej, acc)
 	}
 }
+
+// round-82: repeated history replacements at cursor zero must not accumulate
+// retry keys — stale keys are pruned against the current log each tick.
+func TestRetryKeysPrunedOnRepeatedReplacement(t *testing.T) {
+	logPath, l := tempLog(t)
+	l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "v1", Decision: "approve", ArgsCanonical: "{}"})
+
+	var rejectAll bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if rejectAll || strings.Contains(string(b), "stale-") {
+			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 15 * time.Millisecond,
+		MaxSingletonRetries: 5, Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	// let v1 accumulate a retry entry
+	time.Sleep(60 * time.Millisecond) // v1 accumulates a retry entry
+
+	// replace the first receipt five times with different content — each
+	// replacement orphans the previous retry key
+	for i := 0; i < 5; i++ {
+		alt := filepath.Join(t.TempDir(), fmt.Sprintf("alt-%d.jsonl", i))
+		l2, err := receipts.Open(alt, "", []byte("siem-test-key"), nil, 100)
+		if err != nil {
+			t.Fatalf("alt %d: %v", i, err)
+		}
+		if _, _, err := l2.Append(receipts.Record{Task: "t", Tool: "x",
+			Rule: fmt.Sprintf("stale-%d", i), Decision: "approve", ArgsCanonical: "{}"}); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+		if werr := copyFile(alt, logPath); werr != nil {
+			t.Fatalf("replace %d: %v", i, werr)
+		}
+		time.Sleep(40 * time.Millisecond) // let a tick prune
+	}
+
+	// after pruning the map holds at most the CURRENT entry's key
+	if got := tl.RetryCount(); got > 1 {
+		close(stop)
+		t.Fatalf("STALE RETRY KEYS ACCUMULATED: %d keys — pruning failed", got)
+	}
+
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
+	}
+}

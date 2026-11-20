@@ -21,6 +21,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/adventurewave-labs/referee/internal/receipts"
@@ -353,8 +354,24 @@ type Tailer struct {
 	MaxSingletonRetries int
 	// singletonRetries: "seq|chain-hash" → rejection count. Keyed by content
 	// (chain hash), not seq alone — a replacement receipt reusing a seq gets
-	// a fresh budget in every cursor state (round-77).
+	// a fresh budget in every cursor state (round-77). Guarded by retryMu:
+	// the dashboard and tests read it while the tailer writes.
 	singletonRetries map[string]int
+	retryMu          sync.Mutex
+}
+
+// RetryCount exposes the live retry-bookkeeping size (dashboards/tests).
+func (t *Tailer) RetryCount() int {
+	t.retryMu.Lock()
+	defer t.retryMu.Unlock()
+	return len(t.singletonRetries)
+}
+
+// retrySet marks a key present in the CURRENT log (pruning helper).
+func (t *Tailer) retryDelete(key string) {
+	t.retryMu.Lock()
+	defer t.retryMu.Unlock()
+	delete(t.singletonRetries, key)
 }
 
 // Run blocks, shipping batches of new entries every Interval. It never
@@ -367,9 +384,11 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 	if t.MaxSingletonRetries <= 0 {
 		t.MaxSingletonRetries = 3
 	}
+	t.retryMu.Lock()
 	if t.singletonRetries == nil {
 		t.singletonRetries = map[string]int{}
 	}
+	t.retryMu.Unlock()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
@@ -419,6 +438,23 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 					delete(t.singletonRetries, k)
 				}
 			}
+			// prune retry keys that no longer match a CURRENT entry: history
+			// changes at cursor zero (repeated first-receipt replacements)
+			// would otherwise accumulate keys forever — the map is bounded by
+			// the current backlog (round-82)
+			t.retryMu.Lock()
+			if len(t.singletonRetries) > 0 {
+				current := make(map[string]bool, len(entries))
+				for _, e := range entries {
+					current[fmt.Sprintf("%d|%s", e.Seq, e.Hash)] = true
+				}
+				for key := range t.singletonRetries {
+					if !current[key] {
+						delete(t.singletonRetries, key)
+					}
+				}
+			}
+			t.retryMu.Unlock()
 			if len(entries) <= shipped {
 				continue
 			}
@@ -491,19 +527,27 @@ func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, 
 		// key includes the chain hash: a replacement receipt with the same
 		// seq but different content is a NEW receipt with a NEW budget.
 		key := fmt.Sprintf("%d|%s", entries[i].Seq, entries[i].Hash)
+		t.retryMu.Lock()
+		hold := false
 		if t.MaxSingletonRetries > 0 {
 			t.singletonRetries[key]++
 			if t.singletonRetries[key] <= t.MaxSingletonRetries {
-				if t.Report != nil {
-					t.Report(fmt.Errorf("siem: singleton [%s] rejected (attempt %d/%d) — retrying", key, t.singletonRetries[key], t.MaxSingletonRetries))
-				}
-				return 0 // hold the cursor; retry next tick
+				hold = true // retry next tick; cursor holds at this record
+			} else {
+				// budget exhausted: the receipt is dropped — release its
+				// bookkeeping NOW (round-80): dropped receipts leave no state
+				delete(t.singletonRetries, key)
 			}
-			// budget exhausted: the receipt is dropped — release its
-			// bookkeeping NOW (round-80): dropped receipts leave no state
-			delete(t.singletonRetries, key)
 		} else {
 			delete(t.singletonRetries, key) // retries disabled: never tracked
+		}
+		t.retryMu.Unlock() // UNLOCKED on every path (the hold path once
+		// returned while locked, deadlocking the tick loop — round-83)
+		if hold {
+			if t.Report != nil {
+				t.Report(fmt.Errorf("siem: singleton [%s] rejected (attempt %d/%d) — retrying", key, t.singletonRetries[key], t.MaxSingletonRetries))
+			}
+			return 0 // hold the cursor; retry next tick
 		}
 		if t.Report != nil {
 			t.Report(fmt.Errorf("siem: endpoint persistently rejected [%s] after %d retries — DROPPING it so later receipts export", key, t.MaxSingletonRetries))
