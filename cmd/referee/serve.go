@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/adventurewave-labs/referee/internal/caps"
@@ -134,6 +135,9 @@ func cmdServe(args []string) error {
 	// SIEM tailer (§6 P1): best-effort export of every new receipt; SIEM
 	// availability never influences gate behavior — failures are logged, the
 	// receipt log on disk stays the source of truth.
+	if strings.Contains(*siemEndpoint, "?") {
+		return fmt.Errorf("serve: --siem-endpoint must not contain a query string — put credentials in $REF_SIEM_AUTH (Authorization header), not the URL (argv is process-listing visible)")
+	}
 	if *siemEndpoint != "" {
 		// auth via env only (round-39): REF_SIEM_AUTH carries the full
 		// Authorization value; the endpoint URL is never logged (it may

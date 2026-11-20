@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/adventurewave-labs/referee/internal/demo"
@@ -201,6 +202,12 @@ func cmdExport(args []string) error {
 	}
 	if *endpoint == "" {
 		return fmt.Errorf("export: --endpoint required")
+	}
+	// the flag VALUE sits in argv (visible in process listings): refuse
+	// query-bearing endpoints and route credentials through REF_SIEM_AUTH
+	// instead (round-61)
+	if strings.Contains(*endpoint, "?") {
+		return fmt.Errorf("export: endpoint must not contain a query string — put credentials in $REF_SIEM_AUTH (Authorization header), not the URL")
 	}
 	// SIEM auth travels via env only — never argv (rig invariant; round-36:
 	// a --header k=v flag invited tokens into process listings)
