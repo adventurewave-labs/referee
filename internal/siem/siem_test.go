@@ -912,18 +912,36 @@ func TestHeldSingletonRetriesOnNextTick(t *testing.T) {
 // incarnation exhausted its retries.
 func TestRetryBudgetResetsOnLogReplacement(t *testing.T) {
 	logPath, l := tempLog(t)
-	// one singleton that always gets rejected while its history is current
+	// the OLD singleton is always rejected — it burns its retry budget and is
+	// dropped on the 3rd rejection (MaxSingletonRetries 2 → drop on #3)
 	l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "old-solo", Decision: "approve", ArgsCanonical: "{}"})
 
+	var mu sync.Mutex
+	var oldRejects, newRejects, newAccepts int
+	phase := "old" // "old" → test flips to "new" after replacing the log
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if strings.Contains(string(b), "always-rejected") {
+		mu.Lock()
+		defer mu.Unlock()
+		if phase == "old" && strings.Contains(string(b), "old-solo") {
+			oldRejects++
+			// always reject the old singleton while its history is current
 			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
 			return
 		}
-		// record only POST bodies — the GET poller must not clobber
-		if r.Method == http.MethodPost {
-			recText.Store(string(b))
+		if phase == "new" && strings.Contains(string(b), "new-history-solo") {
+			newRejects++
+			if newRejects == 1 {
+				// reject the replacement ONCE: with a FRESH budget it is
+				// retried and accepted; with stale seq-keyed state (already
+				// exhausted by old-solo) it would be dropped on this first
+				// rejection — this rejection is the discriminator
+				w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+				return
+			}
+			newAccepts++
+			w.WriteHeader(200)
+			return
 		}
 		w.WriteHeader(200)
 	}))
@@ -935,18 +953,25 @@ func TestRetryBudgetResetsOnLogReplacement(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- tl.Run(stop) }()
 
-	// burn the old singleton's budget (2 rejects + drop = 3 posts)
-	deadline := time.Now().Add(3 * time.Second)
+	// wait for the old singleton to burn its budget: 3 rejections then dropped
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		bodies := strings.Count(recText.Load().(string), "always-rejected")
-		if bodies >= 3 {
+		mu.Lock()
+		n := oldRejects
+		mu.Unlock()
+		if n >= 3 {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
+	mu.Lock()
+	if oldRejects < 3 {
+		mu.Unlock()
+		t.Fatalf("old singleton never burned its budget")
+	}
+	mu.Unlock()
 
-	// REPLACE the log: new chain, seq 1 carries "always-rejected" again (a
-	// DIFFERENT receipt that the endpoint now accepts)
+	// REPLACE the log with a fresh chain: seq 1 = new-history-solo
 	alt := filepath.Join(t.TempDir(), "alt.jsonl")
 	l2, err := receipts.Open(alt, "", []byte("siem-test-key"), nil, 100)
 	if err != nil {
@@ -959,25 +984,41 @@ func TestRetryBudgetResetsOnLogReplacement(t *testing.T) {
 		t.Fatalf("replace: %v", werr)
 	}
 
-	// the new receipt must SHIP (fresh budget) — with stale retry state keyed
-	// by seq 1, its first rejection would have dropped it immediately
-	shipped := false
-	postReplaceDeadline := time.Now().Add(5 * time.Second) // fresh window
-	for time.Now().Before(postReplaceDeadline) {
-		bodies := recText.Load().(string)
-		if strings.Contains(bodies, "new-history-solo") {
-			shipped = true
+	// flip the phase: the endpoint now rejects the NEW receipt once, accepts after
+	mu.Lock()
+	phase = "new"
+	mu.Unlock()
+
+	// wait for the new receipt to be rejected once, then accepted
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		ok := newAccepts >= 1 && newRejects >= 1
+		mu.Unlock()
+		if ok {
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
+	mu.Lock()
+	rej, acc := newRejects, newAccepts
+	mu.Unlock()
+	if acc < 1 || rej < 1 {
+		close(stop)
+		t.Fatalf("new receipt must be rejected once then accepted (fresh budget proof); rejects=%d accepts=%d", rej, acc)
+	}
+	// THE ASSERTION: the replacement survived a rejection — with stale
+	// seq-keyed retry state it would have been DROPPED on its first rejection
 	close(stop)
-	<-time.After(100 * time.Millisecond)
-	if !shipped {
-		t.Fatalf("new-history receipt was dropped on stale retry state")
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
 	}
 }
-
 func recBody(url string) string {
 	resp, err := http.Get(url)
 	if err != nil {
