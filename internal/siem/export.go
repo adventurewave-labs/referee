@@ -181,7 +181,7 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 	u.Path = strings.TrimRight(u.Path, "/") + "/v1/logs"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(b))
 	if err != nil {
-		return fmt.Errorf("siem: request: %w", err)
+		return fmt.Errorf("siem: request construction failed (details never logged)")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range x.Headers {
@@ -214,7 +214,8 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 	const ackCap = 1 << 20
 	body, rerr := io.ReadAll(io.LimitReader(resp.Body, ackCap+1))
 	if rerr != nil {
-		return fmt.Errorf("siem: read ack: %v", rerr)
+		// fixed message: read errors can quote endpoint-controlled bytes
+		return fmt.Errorf("siem: read ack failed (response content never logged)")
 	}
 	if len(body) > ackCap {
 		return fmt.Errorf("siem: ack exceeds %d bytes — rejected", ackCap)
