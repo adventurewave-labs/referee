@@ -92,6 +92,13 @@ func Analyze(entries []receipts.Entry) Report {
 //   - NEVER-USED caps: granted caps no receipt ever exercised — candidates
 //     for removal (least privilege decays without pruning).
 func SuggestNarrowing(rep Report, pol *policy.Policy) []string {
+	return SuggestNarrowingWithTasks(rep, pol, nil, nil)
+}
+
+// SuggestNarrowingWithTasks is SuggestNarrowing with task-class attribution:
+// entries (the same receipts the report was built from) plus taskClasses
+// (task-id → class). Unused-cap suggestions require the mapping.
+func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipts.Entry, taskClasses map[string]string) []string {
 	var out []string
 	for _, ts := range rep.Tools {
 		if ts.Calls >= MinCleanCalls && ts.Approved == ts.Calls && ts.ProbeDecided == 0 {
@@ -103,18 +110,40 @@ func SuggestNarrowing(rep Report, pol *policy.Policy) []string {
 				"CAP GAP? %s: %d cap-missing denials — grant an explicit cap in the task class or accept the posture deliberately", ts.Tool, ts.CapGaps))
 		}
 	}
-	// never-used caps: walk the policy's task-class caps, check which
-	// tools the receipts actually exercised
-	exercised := map[string]bool{}
+	// never-used caps: caps are granted PER TASK CLASS, so usage must be
+	// attributed per class via taskClasses (task-id → class). Without the
+	// mapping the analysis CANNOT know which class a call ran under — it
+	// degrades honestly: no unused-cap suggestions, just a note (round-2
+	// gate finding: a tool approved in one class must not hide unused
+	// grants of it in every other).
+	if taskClasses == nil {
+		out = append(out, "INFO: unused-cap detection needs task-class attribution — pass taskClasses (task-id → class); skipping unused-cap suggestions")
+		return out
+	}
+	exercised := map[string]map[string]bool{} // class → tool → approved?
 	for _, ts := range rep.Tools {
-		exercised[ts.Tool] = true
+		if ts.Approved == 0 {
+			continue
+		}
+	}
+	for _, e := range entries {
+		class, ok := taskClasses[e.Task]
+		if !ok {
+			continue
+		}
+		if exercised[class] == nil {
+			exercised[class] = map[string]bool{}
+		}
+		if e.Decision == "approve" {
+			exercised[class][e.Tool] = true
+		}
 	}
 	if pol != nil {
 		for _, tc := range pol.Tasks {
 			for _, c := range tc.Caps {
-				if !exercised[c.Tool] {
+				if !exercised[tc.Class][c.Tool] {
 					out = append(out, fmt.Sprintf(
-						"UNUSED? task %s grants %s (pattern %s) — no receipt exercised it; prune or verify intent", tc.Class, c.Tool, c.Pattern))
+						"UNUSED? task %s grants %s (pattern %s) — no APPROVED call exercised it in this class; prune or verify intent", tc.Class, c.Tool, c.Pattern))
 				}
 			}
 		}

@@ -87,7 +87,7 @@ func TestSuggestNarrowingUnusedCaps(t *testing.T) {
 		entry(1, "called_tool", "auto:clean", "approve", "integrity=pass conf=pass"),
 	}
 	rep := Analyze(entries)
-	sugg := SuggestNarrowing(rep, pol)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"})
 	joined := strings.Join(sugg, "\n")
 	if !strings.Contains(joined, "UNUSED? task ops grants never_called_tool") {
 		t.Fatalf("unused-cap suggestion missing: %s", joined)
@@ -108,5 +108,107 @@ func TestMinCleanCallsGuard(t *testing.T) {
 		if strings.Contains(s, "TIGHTEN? quiet_tool") {
 			t.Fatalf("sub-threshold tool must not be suggested: %s", s)
 		}
+	}
+}
+
+// gate finding: a cap:missing DENIAL must not mark the tool as exercising
+// its caps — the denial demonstrates no cap was exercised.
+func TestSuggestNarrowingDeniedCallsNotExercised(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps:  []policy.CapDecl{{Tool: "denied_tool", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		entry(1, "denied_tool", "cap:missing", "deny", "unchecked"),
+		entry(2, "denied_tool", "cap:missing", "deny", "unchecked"),
+	}
+	rep := Analyze(entries)
+	joined := strings.Join(SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}), "\n")
+	if !strings.Contains(joined, "UNUSED? task ops grants denied_tool") {
+		t.Fatalf("denied-only tool must still be flagged unused: %s", joined)
+	}
+}
+
+// multiple grants sharing one tool: approval of the tool exercises ALL its
+// caps in v1 (scope-level tracking is future work) — but a tool with zero
+// approvals stays unused even when OTHER tools were approved.
+func TestSuggestNarrowingSharedToolGrants(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps: []policy.CapDecl{
+				{Tool: "shared_tool", Pattern: "/a/**"},
+				{Tool: "shared_tool", Pattern: "/b/**"},
+				{Tool: "idle_tool", Pattern: "**"},
+			},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		entry(1, "shared_tool", "auto:clean", "approve", "integrity=pass conf=pass"),
+	}
+	rep := Analyze(entries)
+	joined := strings.Join(SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}), "\n")
+	if strings.Contains(joined, "grants shared_tool") {
+		t.Fatalf("approved tool must not be flagged unused: %s", joined)
+	}
+	if !strings.Contains(joined, "grants idle_tool") {
+		t.Fatalf("idle tool must be flagged: %s", joined)
+	}
+}
+
+// round-2: without task-class attribution the analysis degrades honestly —
+// no unused-cap suggestions, just the INFO note.
+func TestAbsentTaskClassesDegrades(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps:  []policy.CapDecl{{Tool: "never_called_tool", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		entry(1, "other", "auto:clean", "approve", "integrity=pass conf=pass"),
+	}
+	rep := Analyze(entries)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, nil)
+	joined := strings.Join(sugg, "\n")
+	if strings.Contains(joined, "UNUSED?") {
+		t.Fatalf("no attribution = no unused-cap suggestions (would be per-class wrong): %s", joined)
+	}
+	if !strings.Contains(joined, "task-class attribution") {
+		t.Fatalf("the INFO note must explain the degradation: %s", joined)
+	}
+}
+
+// round-2: per-class attribution — a tool approved under research does NOT
+// exercise its deploy-class grant.
+func TestPerClassAttribution(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{
+			{Class: "research", Caps: []policy.CapDecl{{Tool: "shared", Pattern: "**"}}},
+			{Class: "deploy", Caps: []policy.CapDecl{{Tool: "shared", Pattern: "**"}}},
+		},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "t-research", Tool: "shared",
+			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+	}
+	rep := Analyze(entries)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t-research": "research", "t-deploy": "deploy"})
+	joined := strings.Join(sugg, "\n")
+	if strings.Contains(joined, "task research grants shared") {
+		t.Fatalf("research-approved grant must not be flagged unused")
+	}
+	if !strings.Contains(joined, "task deploy grants shared") {
+		t.Fatalf("deploy-class grant of a research-only tool must be flagged unused: %s", joined)
 	}
 }
