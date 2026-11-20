@@ -312,3 +312,74 @@ func TestTailerBoundedBatches(t *testing.T) {
 		t.Fatalf("tailer did not stop")
 	}
 }
+
+// round-41: query-bearing endpoints — /v1/logs appends to the PATH, query
+// preserved; and errors are URL-sanitized (query-string tokens never reach
+// logs or output).
+func TestQueryBearingEndpointAndSanitizedErrors(t *testing.T) {
+	var gotPath, gotRawQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotRawQuery = r.URL.Path, r.URL.RawQuery
+		w.WriteHeader(200)
+	}))
+	defer ts.Close()
+
+	if err := New(ts.URL+"/ingest?token=secret-token", nil).Ship(sampleEntries()); err != nil {
+		t.Fatalf("ship: %v", err)
+	}
+	if gotPath != "/ingest/v1/logs" {
+		t.Fatalf("path append wrong: %q", gotPath)
+	}
+	if gotRawQuery != "token=secret-token" {
+		t.Fatalf("query must be preserved: %q", gotRawQuery)
+	}
+
+	// transport failure: the error must NOT contain the token
+	down := New("http://127.0.0.1:1/ingest?token=secret-token", nil)
+	err := down.Ship(sampleEntries())
+	if err == nil {
+		t.Fatalf("transport failure expected")
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Fatalf("ERROR LEAKED THE QUERY-STRING TOKEN: %v", err)
+	}
+}
+
+// round-41: cancellation during a backlog drain — Run returns promptly when
+// stopped mid-export instead of finishing every batch.
+func TestTailerStopsMidBacklog(t *testing.T) {
+	logPath, l := tempLog(t)
+	for i := 0; i < 30; i++ {
+		if _, _, err := l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "r", Decision: "approve", ArgsCanonical: "{}"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	// a slow endpoint: each POST takes ~600ms, so 3+ batches take ~2s —
+	// longer than the stop deadline
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(600 * time.Millisecond)
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 10 * time.Millisecond,
+		MaxBatch: 5, Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- tl.Run(stop) }()
+
+	time.Sleep(300 * time.Millisecond) // first batch in flight
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer kept draining the backlog after stop")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("shutdown took %s — cancellation did not reach the in-flight request", elapsed)
+	}
+}

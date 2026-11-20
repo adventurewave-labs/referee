@@ -225,6 +225,6 @@ func cmdExport(args []string) error {
 	if err := siem.New(*endpoint, hdr).Ship(batch); err != nil {
 		return err
 	}
-	fmt.Printf("export: shipped %d entries (seq %d..%d) to %s\n", len(batch), batch[0].Seq, batch[len(batch)-1].Seq, *endpoint)
+	fmt.Printf("export: shipped %d entries (seq %d..%d)\n", len(batch), batch[0].Seq, batch[len(batch)-1].Seq)
 	return nil
 }

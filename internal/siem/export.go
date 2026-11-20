@@ -11,10 +11,14 @@ package siem
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/adventurewave-labs/referee/internal/receipts"
@@ -113,7 +117,19 @@ func New(endpoint string, headers map[string]string) *Exporter {
 
 // Ship posts one batch. Returns the HTTP/API error for callers to report —
 // the caller decides retry policy; Ship itself never mutates state.
+//
+// Endpoint handling: /v1/logs is appended to the URL PATH (query preserved)
+// — string concatenation would mangle query-bearing endpoints, whose query
+// strings legitimately carry SIEM tokens; every error is sanitized so no
+// URL (and therefore no query-string credential) reaches logs or output
+// (round-40).
 func (x *Exporter) Ship(entries []receipts.Entry) error {
+	return x.ShipContext(context.Background(), entries)
+}
+
+// ShipContext is Ship with a caller-owned context (cancellation stops the
+// in-flight request).
+func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -139,7 +155,12 @@ func (x *Exporter) Ship(entries []receipts.Entry) error {
 	if err != nil {
 		return fmt.Errorf("siem: encode: %w", err)
 	}
-	req, err := http.NewRequest(http.MethodPost, x.Endpoint+"/v1/logs", bytes.NewReader(b))
+	u, err := url.Parse(x.Endpoint)
+	if err != nil {
+		return fmt.Errorf("siem: bad endpoint (host=%s)", sanitizedHost(x.Endpoint))
+	}
+	u.Path = strings.TrimRight(u.Path, "/") + "/v1/logs"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(b))
 	if err != nil {
 		return fmt.Errorf("siem: request: %w", err)
 	}
@@ -151,13 +172,44 @@ func (x *Exporter) Ship(entries []receipts.Entry) error {
 	}
 	resp, err := x.Client.Do(req)
 	if err != nil {
-		return fmt.Errorf("siem: post: %w", err)
+		// sanitize: transport errors embed the full URL — query-string
+		// tokens must never reach logs or output
+		return fmt.Errorf("siem: post %s: %v", sanitizedHost(x.Endpoint), unwrapURL(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("siem: endpoint returned %d", resp.StatusCode)
 	}
 	return nil
+}
+
+// sanitizedHost reduces an endpoint to scheme://host[:port] — anything after
+// the path separator (paths, queries) is dropped before it can reach a log.
+func sanitizedHost(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" {
+		return "(unparseable-endpoint)"
+	}
+	scheme := u.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + u.Host
+}
+
+// unwrapURL strips any URL-bearing text from a transport error (net/http
+// errors quote the full request URL, query string included).
+func unwrapURL(err error) error {
+	msg := err.Error()
+	// net/http errors quote the full request URL — drop everything between
+	// the first and last double quote so query-string tokens never reach
+	// logs or output
+	if strings.Count(msg, `"`) >= 2 {
+		i := strings.Index(msg, `"`)
+		j := strings.LastIndex(msg, `"`)
+		msg = msg[:i] + `"<sanitized>"` + msg[j+1:]
+	}
+	return errors.New(msg)
 }
 
 // Tailer follows the receipt log and ships new entries as they appear.
@@ -176,12 +228,22 @@ type Tailer struct {
 	MaxBatch int
 }
 
-// Run blocks, shipping batches of new entries every Interval. Returns on
-// error from reading the log (file removed, etc.).
+// Run blocks, shipping batches of new entries every Interval. It never
+// returns on transient log/endpoint errors (best-effort contract): only the
+// stop signal ends it.
 func (t *Tailer) Run(stop <-chan struct{}) error {
 	if t.Interval <= 0 {
 		t.Interval = 5 * time.Second
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-stop:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 	shipped := 0 // in-memory cursor: number of entries already exported
 	tick := time.NewTicker(t.Interval)
 	defer tick.Stop()
@@ -211,11 +273,16 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				max = 500
 			}
 			for shipped < len(entries) { // bounded chunks until caught up
+				select {
+				case <-stop:
+					return nil // cancellation works mid-backlog (round-40)
+				default:
+				}
 				end := shipped + max
 				if end > len(entries) {
 					end = len(entries)
 				}
-				if err := t.Log.Ship(entries[shipped:end]); err != nil {
+				if err := t.Log.ShipContext(ctx, entries[shipped:end]); err != nil {
 					if t.Report != nil {
 						t.Report(err)
 					}
