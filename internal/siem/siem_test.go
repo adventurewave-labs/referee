@@ -812,15 +812,6 @@ func TestSingletonRejectedOnceThenAccepted(t *testing.T) {
 		t.Fatalf("singleton never shipped despite retries (temporary rejection became permanent loss)")
 	}
 
-	// the retry-budget path: a singleton rejected past the budget IS dropped
-	eng := testEngineForSIEM()
-	_ = eng
-	eng2 := New(srv.URL, nil)
-	_ = eng2
-	eng3 := &Tailer{Log: New(srv.URL, nil), MaxSingletonRetries: 1}
-	_ = eng3
-	_ = eng
-
 	close(stop)
 	select {
 	case err := <-done:
@@ -831,5 +822,3 @@ func TestSingletonRejectedOnceThenAccepted(t *testing.T) {
 		t.Fatalf("tailer did not stop")
 	}
 }
-
-func testEngineForSIEM() struct{} { return struct{}{} }

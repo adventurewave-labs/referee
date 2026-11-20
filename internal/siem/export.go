@@ -426,7 +426,17 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 					break // transient failure: retry the same cursor next tick
 				}
 				shipped += consumed
-				lastHash = entries[shipped-1].Hash
+				if shipped > 0 {
+					lastHash = entries[shipped-1].Hash
+				}
+				if consumed < end-shipped {
+					// the drain stopped at a held singleton (retry budget):
+					// advancing the successful prefix is done — resuming the
+					// held singleton in the SAME tick would burn the retry
+					// budget in milliseconds instead of over the promised
+					// retry window (round-72)
+					break
+				}
 			}
 		}
 	}
