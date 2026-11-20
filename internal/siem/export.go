@@ -458,5 +458,11 @@ func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, 
 	}
 	mid := (i + j) / 2
 	n := t.shipRange(ctx, entries, i, mid, depth+1)
+	if n < mid-i {
+		// the left half held (transient failure): STOP — processing the right
+		// half now would advance the cursor past undelivered left records
+		// (round-70). The retry resumes at the failure point next tick.
+		return n
+	}
 	return n + t.shipRange(ctx, entries, mid, j, depth+1)
 }

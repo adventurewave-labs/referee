@@ -683,30 +683,34 @@ func TestPartialRejectionSplitsAndSkips(t *testing.T) {
 	}
 
 	var mu sync.Mutex
-	var acceptedRules []string // every rule that reached the endpoint
+	var acceptedRules []string // rules ACCEPTED (200) — attempts don't count
 	var reports []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		has := strings.Contains(string(b), "poisoned-c")
 		n := strings.Count(string(b), `"referee.decision"`)
-		for _, rule := range rules {
-			if strings.Contains(string(b), `"`+rule+`"`) {
-				mu.Lock()
-				acceptedRules = append(acceptedRules, rule)
-				mu.Unlock()
-			}
-		}
 		if has {
 			// reject the whole batch containing the poison; tailer splits
 			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":` + fmt.Sprint(n) + `}}`))
 			return
 		}
 		w.WriteHeader(200)
+		mu.Lock()
+		for _, rule := range rules {
+			if strings.Contains(string(b), `"`+rule+`"`) {
+				acceptedRules = append(acceptedRules, rule)
+			}
+		}
+		mu.Unlock()
 	}))
 	defer srv.Close()
 
 	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 20 * time.Millisecond,
-		MaxBatch: 10, Report: func(err error) { reports = append(reports, err.Error()) }}
+		MaxBatch: 10, Report: func(err error) {
+			mu.Lock()
+			reports = append(reports, err.Error())
+			mu.Unlock()
+		}}
 	stop := make(chan struct{})
 	done := make(chan error, 1)
 	go func() { done <- tl.Run(stop) }()
