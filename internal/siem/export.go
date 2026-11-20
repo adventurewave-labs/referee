@@ -243,13 +243,16 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 		return nil // full success
 	}
 	raw := []byte(ack.PartialSuccess.RejectedLogRecords)
-	rejected := 0
+	// int64 throughout: narrowing through int() on 32-bit builds could wrap a
+	// huge count into the plausible range and silently acknowledge a rejected
+	// batch (round-59)
+	rejected := int64(0)
 	malformed := false
 	if raw[0] == '"' {
 		var strVal string
 		if json.Unmarshal(raw, &strVal) == nil {
 			if n, perr := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); perr == nil && n >= 0 {
-				rejected = int(n)
+				rejected = n
 			} else {
 				malformed = true
 			}
@@ -269,7 +272,7 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 		// itself (a credential hidden as "rejected count" must not reach
 		// logs). Plausible counts (≤ batch size) are reported; implausible
 		// ones get a fixed message.
-		if rejected > len(entries) {
+		if rejected > int64(len(entries)) {
 			return fmt.Errorf("siem: endpoint reported an implausible rejection count (cursor held; retrying)")
 		}
 		return fmt.Errorf("siem: endpoint rejected %d of %d records (cursor held; retrying)", rejected, len(entries))
