@@ -26,11 +26,14 @@ import (
 	"github.com/adventurewave-labs/referee/internal/receipts"
 )
 
-// AnyValue is the OTLP AnyValue union (kvlistValue and arrayValue branches).
+// AnyValue is the OTLP AnyValue union (kvlistValue, stringValue, arrayValue
+// branches). StringValue is a POINTER so empty strings still serialize as
+// {"stringValue":""} — omitempty on a plain string would strip the field and
+// lose the value's type (round-79).
 type AnyValue struct {
-	KVList *KVList   `json:"kvlistValue,omitempty"`
-	StringValue string `json:"stringValue,omitempty"`
-	Array  *AnyArray `json:"arrayValue,omitempty"`
+	KVList      *KVList   `json:"kvlistValue,omitempty"`
+	StringValue *string   `json:"stringValue,omitempty"`
+	Array       *AnyArray `json:"arrayValue,omitempty"`
 }
 
 // AnyArray is an OTLP array of AnyValues.
@@ -59,7 +62,10 @@ type Attribute struct {
 	Value AnyValue `json:"value"`
 }
 
-func strAttr(k, v string) Attribute { return Attribute{Key: k, Value: AnyValue{StringValue: v}} }
+func strAttr(k, v string) Attribute {
+	sv := v // copy: the pointer must carry even empty strings
+	return Attribute{Key: k, Value: AnyValue{StringValue: &sv}}
+}
 
 // PartialRejectionError is returned by ShipContext when the endpoint
 // accepted SOME records of the batch and rejected others (OTLP
@@ -110,7 +116,8 @@ func ToOTLP(e receipts.Entry) Record {
 	if len(e.BlockIDs) > 0 {
 		ids := make([]AnyValue, 0, len(e.BlockIDs))
 		for _, id := range e.BlockIDs {
-			ids = append(ids, AnyValue{StringValue: id})
+			sv := id
+			ids = append(ids, AnyValue{StringValue: &sv})
 		}
 		attrs = append(attrs, Attribute{Key: "referee.block_ids", Value: AnyValue{Array: &AnyArray{Values: ids}}})
 	}
@@ -344,6 +351,10 @@ type Tailer struct {
 	// before being dropped — one rejection may be a temporary endpoint
 	// condition; permanent export loss requires persistence (round-71).
 	MaxSingletonRetries int
+	// singletonRetries: "seq|chain-hash" → rejection count. Keyed by content
+	// (chain hash), not seq alone — a replacement receipt reusing a seq gets
+	// a fresh budget in every cursor state (round-77).
+	singletonRetries map[string]int
 }
 
 // Run blocks, shipping batches of new entries every Interval. It never
@@ -355,6 +366,9 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 	}
 	if t.MaxSingletonRetries <= 0 {
 		t.MaxSingletonRetries = 3
+	}
+	if t.singletonRetries == nil {
+		t.singletonRetries = map[string]int{}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -370,10 +384,6 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 	// log with a different history resets the cursor (re-export; SIEM
 	// dedupes on referee.seq) rather than silently skipping new receipts
 	// (round-42)
-	singletonRetries := map[string]int{} // "seq|chain-hash" → rejection count:
-	// keyed by CONTENT (chain hash), not seq alone — a replacement receipt
-	// reusing a seq gets a fresh budget in every cursor state (round-77;
-	// stale seq-only keys transferred exhausted budgets across histories)
 	tick := time.NewTicker(t.Interval)
 	defer tick.Stop()
 	for {
@@ -405,7 +415,9 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				// retry budgets key on seq: a new history's receipts must get
 				// fresh budgets (round-74 — stale counts dropped new receipts
 				// on their first rejection)
-				singletonRetries = map[string]int{}
+				for k := range t.singletonRetries {
+					delete(t.singletonRetries, k)
+				}
 			}
 			if len(entries) <= shipped {
 				continue
@@ -429,7 +441,7 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				// singletons — accepted runs advance the cursor, a singleton
 				// the endpoint persistently rejects is DROPPED LOUDLY (reported
 				// with its seq) so later receipts never stall (round-68)
-				consumed := t.shipRange(ctx, entries, shipped, end, 0, singletonRetries)
+				consumed := t.shipRange(ctx, entries, shipped, end, 0)
 				if consumed == 0 {
 					break // transient failure: retry the same cursor next tick
 				}
@@ -455,12 +467,13 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 // rejections HALVE the range until singletons; a singleton the endpoint
 // rejects is dropped loudly (reported) and consumed, so one poisoned record
 // can never stall every receipt after it.
-func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, depth int, singletonRetries map[string]int) int {
+func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, depth int) int {
 	if i >= j {
 		return 0
 	}
 	err := t.Log.ShipContext(ctx, entries[i:j])
 	if err == nil {
+		t.releaseRetries(entries, i, j)
 		return j - i
 	}
 	var pre *PartialRejectionError
@@ -479,10 +492,10 @@ func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, 
 		// seq but different content is a NEW receipt with a NEW budget.
 		key := fmt.Sprintf("%d|%s", entries[i].Seq, entries[i].Hash)
 		if t.MaxSingletonRetries > 0 {
-			singletonRetries[key]++
-			if singletonRetries[key] <= t.MaxSingletonRetries {
+			t.singletonRetries[key]++
+			if t.singletonRetries[key] <= t.MaxSingletonRetries {
 				if t.Report != nil {
-					t.Report(fmt.Errorf("siem: singleton [%s] rejected (attempt %d/%d) — retrying", key, singletonRetries[key], t.MaxSingletonRetries))
+					t.Report(fmt.Errorf("siem: singleton [%s] rejected (attempt %d/%d) — retrying", key, t.singletonRetries[key], t.MaxSingletonRetries))
 				}
 				return 0 // hold the cursor; retry next tick
 			}
@@ -499,12 +512,37 @@ func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, 
 		return 0
 	}
 	mid := (i + j) / 2
-	n := t.shipRange(ctx, entries, i, mid, depth+1, singletonRetries)
+	n := t.shipRange(ctx, entries, i, mid, depth+1)
 	if n < mid-i {
 		// the left half held (transient failure): STOP — processing the right
 		// half now would advance the cursor past undelivered left records
 		// (round-70). The retry resumes at the failure point next tick.
 		return n
 	}
-	return n + t.shipRange(ctx, entries, mid, j, depth+1, singletonRetries)
+	return n + t.shipRange(ctx, entries, mid, j, depth+1)
+}
+
+// releaseRetries drops retry bookkeeping for receipts in [i, j) once they
+// are consumed (accepted or permanently dropped) — without this the budget
+// map grows without bound over a long-running tailer (round-79).
+func (t *Tailer) releaseRetries(entries []receipts.Entry, i, j int) {
+	if len(entries) == 0 || j <= i {
+		return
+	}
+	lo, hi := entries[i].Seq, entries[j-1].Seq
+	for key := range t.singletonRetries {
+		sep := strings.IndexByte(key, '|')
+		if sep <= 0 {
+			delete(t.singletonRetries, key)
+			continue
+		}
+		var seq uint64
+		if _, perr := fmt.Sscanf(key[:sep], "%d", &seq); perr != nil {
+			delete(t.singletonRetries, key)
+			continue
+		}
+		if seq >= lo && seq <= hi {
+			delete(t.singletonRetries, key)
+		}
+	}
 }
