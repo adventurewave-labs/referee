@@ -112,9 +112,17 @@ type Exporter struct {
 	Client   *http.Client
 }
 
-// New builds an exporter (default client timeout 10s).
+// New builds an exporter (default client timeout 10s). Redirects are
+// REJECTED: a 301/302/303 on an OTLP POST can degrade to a payload-less GET
+// — receipts would be silently lost while the tailer advanced its cursor
+// (round-48). An SIEM endpoint that needs to move must return the new URL in
+// an error the operator reconfigures to.
 func New(endpoint string, headers map[string]string) *Exporter {
-	return &Exporter{Endpoint: endpoint, Headers: headers, Client: &http.Client{Timeout: 10 * time.Second}}
+	client := &http.Client{Timeout: 10 * time.Second}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &Exporter{Endpoint: endpoint, Headers: headers, Client: client}
 }
 
 // Ship posts one batch. Returns the HTTP/API error for callers to report —

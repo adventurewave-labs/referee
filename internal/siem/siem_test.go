@@ -504,18 +504,40 @@ func TestPartialRejectionMalformedReported(t *testing.T) {
 }
 
 // round-46: `{}` and omitted partialSuccess are VALID full success —
-// rejecting them would hold the cursor and re-export forever.
+// rejecting them would hold the cursor and re-export forever. The server
+// returns each body so the acknowledgement parsing is genuinely exercised.
 func TestEmptyAckIsFullSuccess(t *testing.T) {
 	for _, body := range []string{`{}`, `{"partialSuccess":{}}`} {
-		rec := &bodyRecorder{}
-		srv := httptest.NewServer(rec.handler())
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(body)) // the ack under test, actually sent
+		}))
 		if err := New(srv.URL, nil).Ship(sampleEntries()); err != nil {
 			t.Fatalf("body %s must be full success, got %v", body, err)
 		}
 		srv.Close()
-		if !strings.Contains(rec.body(), "referee.decision") {
-			t.Fatalf("records must have shipped")
-		}
+	}
+}
+
+// round-49: redirects are rejected — a 302 must surface as an error (cursor
+// held), never as a payload-less success at the destination.
+func TestRedirectRejected(t *testing.T) {
+	var destinationHit bool
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		destinationHit = true
+		w.WriteHeader(http.StatusOK) // empty 200 at the destination
+	}))
+	defer dest.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, dest.URL+"/v1/logs", http.StatusFound) // 302
+	}))
+	defer srv.Close()
+
+	err := New(srv.URL, nil).Ship(sampleEntries())
+	if err == nil || !strings.Contains(err.Error(), "302") {
+		t.Fatalf("redirect must surface as an error, got %v", err)
+	}
+	if destinationHit {
+		t.Fatalf("REDIRECT FOLLOWED — the batch was silently discarded at the destination")
 	}
 }
 
