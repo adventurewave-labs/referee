@@ -196,8 +196,11 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 		return fmt.Errorf("siem: post %s: %v", sanitizedHost(x.Endpoint), unwrapURL(err))
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("siem: endpoint returned %d", resp.StatusCode)
+	// OTLP success is exactly 200: 202 Accepted means processing is
+	// INCOMPLETE — accepting it would advance the cursor past undelivered
+	// records (round-66)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("siem: endpoint returned %d (OTLP success is 200; cursor held)", resp.StatusCode)
 	}
 	// partial rejection: HTTP 200 with rejectedLogRecords > 0 means some
 	// records were dropped — report it so the caller holds the cursor (the

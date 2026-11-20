@@ -645,3 +645,26 @@ func TestAckValuesNeverReachErrors(t *testing.T) {
 		}
 	}
 }
+
+// round-66: non-200 successes (202 Accepted, 204 No Content) must NOT
+// confirm delivery — OTLP success is exactly 200.
+func TestNonOKStatusesNotConfirmed(t *testing.T) {
+	for _, status := range []int{http.StatusAccepted, http.StatusNoContent} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		}))
+		err := New(srv.URL, nil).Ship(sampleEntries())
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "cursor held") {
+			t.Fatalf("status %d must hold the cursor, got %v", status, err)
+		}
+	}
+	// 200 with a valid ack still succeeds
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	if err := New(srv.URL, nil).Ship(sampleEntries()); err != nil {
+		t.Fatalf("200 with {} must succeed: %v", err)
+	}
+}
