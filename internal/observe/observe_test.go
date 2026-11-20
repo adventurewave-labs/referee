@@ -281,3 +281,31 @@ func TestEmptyClassValueUnmapped(t *testing.T) {
 		}
 	}
 }
+
+// round-79: unknown task-class VALUES (typos) suppress unused conclusions —
+// usage attributed to a class not in the policy could hide real usage.
+func TestUnknownClassValuesSuppressUnused(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "deploy",
+			Caps:  []policy.CapDecl{{Tool: "granted", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "t", Tool: "granted",
+			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+	}
+	rep := Analyze(entries)
+	// mapped to a TYPO class ("deplyo") — usage is real but attributed to a
+	// class the policy doesn't know; the deploy grant must NOT be pruned
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "deplyo"})
+	joined := strings.Join(sugg, "\n")
+	if strings.Contains(joined, "UNUSED? task deploy") {
+		t.Fatalf("unknown-class attribution must suppress pruning suggestions: %s", joined)
+	}
+	if !strings.Contains(joined, "not in the policy") {
+		t.Fatalf("unknown classes must be named: %s", joined)
+	}
+}

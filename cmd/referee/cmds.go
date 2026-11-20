@@ -275,6 +275,11 @@ func cmdObserve(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// verify the chain FIRST: CAP GAP lines are advisory input for pruning
+	// grants — they must never be produced from a forged/tampered log
+	if _, _, err := receipts.Verify(*logPath, "", nil); err != nil {
+		return fmt.Errorf("observe: receipt log failed verification: %w", err)
+	}
 	entries, err := receipts.ReadAll(*logPath)
 	if err != nil {
 		return err
@@ -323,6 +328,9 @@ func (m taskClassMap) Set(v string) error {
 	}
 	if strings.TrimSpace(parts[1]) == "" {
 		return fmt.Errorf("task-class: class value must not be empty (task %q) — empty classes hide grants", parts[0])
+	}
+	if strings.TrimSpace(parts[0]) == "" {
+		return fmt.Errorf("task-class: task id must not be empty")
 	}
 	m[parts[0]] = parts[1]
 	return nil
