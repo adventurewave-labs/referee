@@ -340,6 +340,10 @@ type Tailer struct {
 	// drain in many bounded POSTs, never one request that outlives every
 	// client timeout and stalls export forever (round-38).
 	MaxBatch int
+	// MaxSingletonRetries: a rejected SINGLETON is retried this many ticks
+	// before being dropped — one rejection may be a temporary endpoint
+	// condition; permanent export loss requires persistence (round-71).
+	MaxSingletonRetries int
 }
 
 // Run blocks, shipping batches of new entries every Interval. It never
@@ -348,6 +352,9 @@ type Tailer struct {
 func (t *Tailer) Run(stop <-chan struct{}) error {
 	if t.Interval <= 0 {
 		t.Interval = 5 * time.Second
+	}
+	if t.MaxSingletonRetries <= 0 {
+		t.MaxSingletonRetries = 3
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -363,6 +370,7 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 	// log with a different history resets the cursor (re-export; SIEM
 	// dedupes on referee.seq) rather than silently skipping new receipts
 	// (round-42)
+	singletonRetries := map[uint64]int{} // seq → rejection count (round-71)
 	tick := time.NewTicker(t.Interval)
 	defer tick.Stop()
 	for {
@@ -413,7 +421,7 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				// singletons — accepted runs advance the cursor, a singleton
 				// the endpoint persistently rejects is DROPPED LOUDLY (reported
 				// with its seq) so later receipts never stall (round-68)
-				consumed := t.shipRange(ctx, entries, shipped, end, 0)
+				consumed := t.shipRange(ctx, entries, shipped, end, 0, singletonRetries)
 				if consumed == 0 {
 					break // transient failure: retry the same cursor next tick
 				}
@@ -429,7 +437,7 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 // rejections HALVE the range until singletons; a singleton the endpoint
 // rejects is dropped loudly (reported) and consumed, so one poisoned record
 // can never stall every receipt after it.
-func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, depth int) int {
+func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, depth int, singletonRetries map[uint64]int) int {
 	if i >= j {
 		return 0
 	}
@@ -444,9 +452,23 @@ func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, 
 		}
 		return 0 // transient: hold the cursor
 	}
-	if j-i == 1 {
+	if j - i == 1 {
+		// One rejection is NOT persistence: retry a bounded number of ticks
+		// before dropping (round-71 — temporary endpoint conditions must not
+		// become permanent export loss). Holding the cursor during the retry
+		// window is the price of never silently losing a receipt.
+		key := entries[i].Seq
+		if t.MaxSingletonRetries > 0 {
+			singletonRetries[key]++
+			if singletonRetries[key] <= t.MaxSingletonRetries {
+				if t.Report != nil {
+					t.Report(fmt.Errorf("siem: singleton seq %d rejected (attempt %d/%d) — retrying", key, singletonRetries[key], t.MaxSingletonRetries))
+				}
+				return 0 // hold the cursor; retry next tick
+			}
+		}
 		if t.Report != nil {
-			t.Report(fmt.Errorf("siem: endpoint persistently rejected seq %d — DROPPING it so later receipts export", entries[i].Seq))
+			t.Report(fmt.Errorf("siem: endpoint persistently rejected seq %d after %d retries — DROPPING it so later receipts export", key, t.MaxSingletonRetries))
 		}
 		return 1
 	}
@@ -457,12 +479,12 @@ func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, 
 		return 0
 	}
 	mid := (i + j) / 2
-	n := t.shipRange(ctx, entries, i, mid, depth+1)
+	n := t.shipRange(ctx, entries, i, mid, depth+1, singletonRetries)
 	if n < mid-i {
 		// the left half held (transient failure): STOP — processing the right
 		// half now would advance the cursor past undelivered left records
 		// (round-70). The retry resumes at the failure point next tick.
 		return n
 	}
-	return n + t.shipRange(ctx, entries, mid, j, depth+1)
+	return n + t.shipRange(ctx, entries, mid, j, depth+1, singletonRetries)
 }

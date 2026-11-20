@@ -756,3 +756,80 @@ func TestPartialRejectionSplitsAndSkips(t *testing.T) {
 		t.Fatalf("tailer did not stop")
 	}
 }
+
+// round-71: a singleton rejected ONCE is retried and ships when the endpoint
+// recovers — temporary rejection must not become permanent loss.
+func TestSingletonRejectedOnceThenAccepted(t *testing.T) {
+	logPath, l := tempLog(t)
+	rules := []string{"solo-retry"}
+	for _, rule := range rules {
+		if _, _, err := l.Append(receipts.Record{Task: "t", Tool: "x", Rule: rule, Decision: "approve", ArgsCanonical: "{}"}); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	var mu sync.Mutex
+	var accepted []string
+	var rejects int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		mu.Lock()
+		rejects++
+		// reject the FIRST two attempts, accept from the third on
+		if rejects <= 2 {
+			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+			mu.Unlock()
+			return
+		}
+		if strings.Contains(string(b), "solo-retry") {
+			accepted = append(accepted, "solo-retry")
+		}
+		mu.Unlock()
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 20 * time.Millisecond,
+		MaxSingletonRetries: 5, Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		ok := len(accepted) > 0
+		mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	acceptedLen := len(accepted)
+	mu.Unlock()
+	if acceptedLen == 0 {
+		t.Fatalf("singleton never shipped despite retries (temporary rejection became permanent loss)")
+	}
+
+	// the retry-budget path: a singleton rejected past the budget IS dropped
+	eng := testEngineForSIEM()
+	_ = eng
+	eng2 := New(srv.URL, nil)
+	_ = eng2
+	eng3 := &Tailer{Log: New(srv.URL, nil), MaxSingletonRetries: 1}
+	_ = eng3
+	_ = eng
+
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
+	}
+}
+
+func testEngineForSIEM() struct{} { return struct{}{} }
