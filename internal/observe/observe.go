@@ -67,7 +67,11 @@ func Analyze(entries []receipts.Entry) Report {
 		if strings.Contains(e.Axis, "probe") {
 			ts.ProbeDecided++
 		}
-		if strings.Contains(e.Rule, "cap:") {
+		// cap gap = the MISSING-CAP clause on a deny/challenge (round-74/75):
+		// exact rule equality — prefix matching would pull in unrelated
+		// rules like cap:missing-resolved; approved calls are not gaps
+		if (e.Decision == "deny" || e.Decision == "challenge") &&
+			e.Rule == "cap:missing" {
 			ts.CapGaps++
 		}
 		ts.Rules[e.Rule]++
@@ -92,13 +96,15 @@ func Analyze(entries []receipts.Entry) Report {
 //   - NEVER-USED caps: granted caps no receipt ever exercised — candidates
 //     for removal (least privilege decays without pruning).
 func SuggestNarrowing(rep Report, pol *policy.Policy) []string {
-	return SuggestNarrowingWithTasks(rep, pol, nil, nil)
+	return SuggestNarrowingWithTasks(rep, pol, nil, nil, "")
 }
 
 // SuggestNarrowingWithTasks is SuggestNarrowing with task-class attribution:
-// entries (the same receipts the report was built from) plus taskClasses
-// (task-id → class). Unused-cap suggestions require the mapping.
-func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipts.Entry, taskClasses map[string]string) []string {
+// entries (the same receipts the report was built from), taskClasses
+// (task-id → class), and policyHash (the SHA-256 of the policy THAT PRODUCED
+// the receipts — grants of a different policy must never be pruned on this
+// analysis).
+func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipts.Entry, taskClasses map[string]string, policyHash string) []string {
 	var out []string
 	for _, ts := range rep.Tools {
 		if ts.Calls >= MinCleanCalls && ts.Approved == ts.Calls && ts.ProbeDecided == 0 {
@@ -120,17 +126,17 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 	// receipts, or approved receipts whose task is absent from the map all
 	// make "unused" conclusions unsupportable — an approved call of unknown
 	// class may have exercised ANY grant (round-N gate finding).
-	mappedApproved, unknownApproved := 0, 0
+	// Attributability is about MAPPING, not existence: denied/challenged
+	// receipts carry the same class information as approvals (a class that
+	// denies everything still proves its grants went unused — round-74).
+	// Only receipts whose class is UNKNOWN are non-attributable.
+	mappedDecisions, unknownDecisions := 0, 0
 	for _, e := range entries {
-		if e.Decision == "approve" {
-			// an empty class value is UNMAPPED: usage recorded under ""
-			// hides real grants and recommends pruning them (round-78)
-			if cls, ok := taskClasses[e.Task]; ok && cls != "" {
-				mappedApproved++
-			} else {
-				unknownApproved++
-			}
+		if cls, ok := taskClasses[e.Task]; ok && cls != "" {
+			mappedDecisions++
+			continue
 		}
+		unknownDecisions++
 	}
 	// task-class VALUES must exist in the policy: a typo'd class would hide
 	// real usage and recommend pruning in-use grants (round-79)
@@ -156,9 +162,9 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 			"INFO: task-class attribution references classes not in the policy: %s — fix the mapping; skipping unused-cap suggestions", strings.Join(names, ", ")))
 		return out
 	}
-	if taskClasses == nil || len(taskClasses) == 0 || mappedApproved == 0 || unknownApproved > 0 {
+	if taskClasses == nil || len(taskClasses) == 0 || mappedDecisions == 0 || unknownDecisions > 0 {
 		out = append(out, fmt.Sprintf(
-			"INFO: unused-cap detection needs COMPLETE task-class attribution — %d approved call(s) have unmapped tasks; pass taskClasses (task-id → class) covering every approved receipt; skipping unused-cap suggestions", unknownApproved))
+			"INFO: unused-cap detection needs COMPLETE task-class attribution — %d decision(s) have unmapped tasks; pass taskClasses (task-id → class) covering every receipt; skipping unused-cap suggestions", unknownDecisions))
 		return out
 	}
 	exercised := map[string]map[string]bool{} // class → tool → approved?
@@ -182,12 +188,47 @@ func SuggestNarrowingWithTasks(rep Report, pol *policy.Policy, entries []receipt
 			exercised[class][e.Tool] = true
 		}
 	}
+	// Grant-specific (prune) suggestions require a POLICY BINDING when the
+	// caller asks for one (policyHash non-empty — the CLI always passes the
+	// loaded policy's hash): the receipts must carry the same hash. A log
+	// from policy A analyzed against policy B would recommend pruning B's
+	// grants based on A's traffic (round-77). policyHash == "" is the
+	// caller's explicit opt-in to an unbound analysis (unit tests).
+	if pol != nil && policyHash != "" {
+		bound := true
+		for _, e := range entries {
+			if e.PolicyHash == "" {
+				bound = false // pre-binding log: grants can't be proven to match
+				continue
+			}
+			if e.PolicyHash != policyHash {
+				short := e.PolicyHash
+				if len(short) > 12 {
+					short = short[:12]
+				}
+				out = append(out, fmt.Sprintf("INFO: receipt log was produced by a DIFFERENT policy (hash %s ≠ this policy) — grant-specific suggestions suppressed", short))
+				bound = false
+				break
+			}
+		}
+		if !bound {
+			out = append(out, "INFO: grant-specific (prune) suggestions suppressed — the log is not bound to this policy")
+			pol = nil // suppress the grant walk below
+		}
+	}
 	if pol != nil {
+		// usage is tracked per (class, tool) — caps are distinguished by
+		// tool AND pattern, so per-pattern unused detection needs the call's
+		// scope value, which receipts don't record (they HMAC args). v1
+		// therefore flags a (class, tool) grant as unused only when NO
+		// approved call for that tool exists in the class; per-pattern
+		// narrowing within a used tool requires scope attribution (future:
+		// record the effective scope on the receipt).
 		for _, tc := range pol.Tasks {
 			for _, c := range tc.Caps {
 				if !exercised[tc.Class][c.Tool] {
 					out = append(out, fmt.Sprintf(
-						"UNUSED? task %s grants %s (pattern %s) — no APPROVED call exercised it in this class; prune or verify intent", tc.Class, c.Tool, c.Pattern))
+						"UNUSED? task %s grants %s (pattern %s) — no APPROVED call exercised this tool in this class; per-pattern pruning needs scope attribution on receipts (future)", tc.Class, c.Tool, c.Pattern))
 				}
 			}
 		}

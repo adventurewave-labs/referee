@@ -275,24 +275,27 @@ func cmdObserve(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	// verify the chain FIRST: CAP GAP lines are advisory input for pruning
-	// grants — they must never be produced from a forged/tampered log
-	if _, _, err := receipts.Verify(*logPath, "", nil); err != nil {
-		return fmt.Errorf("observe: receipt log failed verification: %w", err)
+	// read ONCE, verify THAT exact slice: verify-then-reread has a TOCTOU
+	// gap (the file can change between reads — round-81, codex)
+	// load/validate the policy FIRST: an empty log must not mask a missing
+	// or malformed --policy (round-75)
+	var pol *policy.Policy
+	if *policyPath != "" {
+		var err error
+		if pol, err = policy.Load(*policyPath); err != nil {
+			return fmt.Errorf("observe: --policy: %w", err)
+		}
 	}
 	entries, err := receipts.ReadAll(*logPath)
 	if err != nil {
 		return err
 	}
+	if err := receipts.VerifyEntries(entries); err != nil {
+		return fmt.Errorf("observe: receipt log failed verification: %w", err)
+	}
 	if len(entries) == 0 {
 		fmt.Println("observe: receipt log empty — run some gated traffic first")
 		return nil
-	}
-	var pol *policy.Policy
-	if *policyPath != "" {
-		if pol, err = policy.Load(*policyPath); err != nil {
-			return err
-		}
 	}
 	rep := observe.Analyze(entries)
 	fmt.Printf("observed %d decisions across %d tools\n\n", rep.Entries, len(rep.Tools))
@@ -301,7 +304,11 @@ func cmdObserve(args []string) error {
 			ts.Tool, ts.Calls, ts.Approved, ts.Challenged, ts.Denied, ts.ProbeDecided, ts.CapGaps)
 	}
 	fmt.Println("\n— suggestions —")
-	for _, s := range observe.SuggestNarrowingWithTasks(rep, pol, entries, taskClasses) {
+	var polHash string
+	if pol != nil {
+		polHash = pol.Hash()
+	}
+	for _, s := range observe.SuggestNarrowingWithTasks(rep, pol, entries, taskClasses, polHash) {
 		fmt.Println("  " + s)
 	}
 	return nil
@@ -331,6 +338,11 @@ func (m taskClassMap) Set(v string) error {
 	}
 	if strings.TrimSpace(parts[0]) == "" {
 		return fmt.Errorf("task-class: task id must not be empty")
+	}
+	if prev, dup := m[parts[0]]; dup && prev != parts[1] {
+		// conflicting duplicates misattribute approvals and falsely mark the
+		// actual class's grants unused (round-81)
+		return fmt.Errorf("task-class: conflicting mapping for task %q (%q vs %q) — pass one mapping", parts[0], prev, parts[1])
 	}
 	m[parts[0]] = parts[1]
 	return nil
