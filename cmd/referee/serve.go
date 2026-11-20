@@ -94,7 +94,9 @@ func cmdServe(args []string) error {
 	logger := log.New(os.Stderr, "referee ", log.LstdFlags)
 
 	eng := &proxy.Engine{Policy: pol, Gate: g, Caps: capsStore, Receipts: rcp, Challenges: mgr, ReceiptKey: hmacKey, Log: logger,
-		ControlToken: []byte(os.Getenv("REF_CONTROL_TOKEN"))}
+		ControlToken: []byte(os.Getenv("REF_CONTROL_TOKEN")),
+	PolicyHash:   pol.Hash(),
+	}
 
 	// challenge dispatch: slack buttons or local (dashboard/CLI approver)
 	var slack *challenge.SlackNotifier

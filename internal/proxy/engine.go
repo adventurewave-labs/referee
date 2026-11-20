@@ -27,6 +27,7 @@ type Engine struct {
 	Challenges *challenge.Manager
 	Notifier   func(challenge.Challenge) error // dispatches the redacted challenge
 	ReceiptKey []byte                          // key for block HMAC refs in challenges
+	PolicyHash string                          // sha256 of the active policy — stamped on receipts so observe binds analysis to the producing policy
 	Log        *log.Logger                     // stderr logger; never logs args or secrets
 	// ControlToken authenticates the privileged control RPCs (task_start,
 	// user_block) that mint caps or add trusted content. They share the
@@ -215,6 +216,7 @@ func (e *Engine) receipt(taskID string, params ToolCallParams, d gate.Decision, 
 		BlockIDs:      d.BlockIDs,
 		Axis:          axis,
 		ArgsCanonical: argsJSON, // stored only as keyed HMAC
+		PolicyHash:    e.PolicyHash,
 	})
 	return err
 }

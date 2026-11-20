@@ -5,7 +5,9 @@
 package policy
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"sort"
 	"os"
 	"time"
 
@@ -310,4 +312,44 @@ func (p *Policy) NarrowCaps(class string, requested []string) ([]CapDecl, error)
 		}
 	}
 	return out, nil
+}
+
+// Hash returns a stable SHA-256 over the compiled policy's source — used by
+// observe to bind receipt analysis to the policy that produced the receipts
+// (round-77: suggestions must reference the grants of THIS policy).
+func (p *Policy) Hash() string {
+	h := sha256.New()
+	// canonical basis: version + defaults + every declared element, in order
+	fmt.Fprintf(h, "v%d|ttl=%s|ceiling=%s|probe=%s\n", p.Source.Version,
+		p.Source.Defaults.TTL.D(), p.Source.Defaults.TTLCeiling.D(), p.Source.Defaults.ProbeTimeout.D())
+	for _, r := range p.Source.Paths {
+		fmt.Fprintf(h, "path|%s|%s|%s\n", r.Pattern, r.Trust, r.Sensitivity)
+	}
+	names := make([]string, 0, len(p.Tools))
+	for n := range p.Tools {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		t := p.Tools[n]
+		fmt.Fprintf(h, "tool|%s|%s|%s|redact=%s|emits=%s|epa=%s|sink=%s|gap=%t|cons=%t|approvers=%v\n",
+			t.Name, t.Integrity, t.Confidentiality, t.Redact, t.Emits, t.EmitPathArg,
+			t.SinkClass, t.CapGapChallenge, t.ProbeConsensus, t.Approvers)
+	}
+	classes := make([]string, 0, len(p.Tasks))
+	for c := range p.Tasks {
+		classes = append(classes, c)
+	}
+	sort.Strings(classes)
+	for _, c := range classes {
+		tc := p.Tasks[c]
+		fmt.Fprintf(h, "task|%s|ttl=%s\n", tc.Class, tc.TTL.D())
+		for _, cap := range tc.Caps {
+			fmt.Fprintf(h, "cap|%s|%s|%s|%s\n", cap.Tool, cap.ScopeArg, cap.Pattern, cap.Sensitivity)
+		}
+	}
+	for _, j := range p.Judges {
+		fmt.Fprintf(h, "judge|%s|%s|%s|%s\n", j.Name, j.Provider, j.Model, j.Endpoint)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
