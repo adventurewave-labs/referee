@@ -499,6 +499,11 @@ func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, 
 				}
 				return 0 // hold the cursor; retry next tick
 			}
+			// budget exhausted: the receipt is dropped — release its
+			// bookkeeping NOW (round-80): dropped receipts leave no state
+			delete(t.singletonRetries, key)
+		} else {
+			delete(t.singletonRetries, key) // retries disabled: never tracked
 		}
 		if t.Report != nil {
 			t.Report(fmt.Errorf("siem: endpoint persistently rejected [%s] after %d retries — DROPPING it so later receipts export", key, t.MaxSingletonRetries))
