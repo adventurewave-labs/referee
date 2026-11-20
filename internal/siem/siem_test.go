@@ -502,3 +502,36 @@ func TestPartialRejectionMalformedReported(t *testing.T) {
 		t.Fatalf("malformed ack must be reported, got %v", err)
 	}
 }
+
+// round-46: `{}` and omitted partialSuccess are VALID full success —
+// rejecting them would hold the cursor and re-export forever.
+func TestEmptyAckIsFullSuccess(t *testing.T) {
+	for _, body := range []string{`{}`, `{"partialSuccess":{}}`} {
+		rec := &bodyRecorder{}
+		srv := httptest.NewServer(rec.handler())
+		if err := New(srv.URL, nil).Ship(sampleEntries()); err != nil {
+			t.Fatalf("body %s must be full success, got %v", body, err)
+		}
+		srv.Close()
+		if !strings.Contains(rec.body(), "referee.decision") {
+			t.Fatalf("records must have shipped")
+		}
+	}
+}
+
+// round-46: null and negative rejection counts are malformed.
+func TestNullAndNegativeRejectionCountsMalformed(t *testing.T) {
+	for _, body := range []string{
+		`{"partialSuccess":{"rejectedLogRecords":null}}`,
+		`{"partialSuccess":{"rejectedLogRecords":-3}}`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(body))
+		}))
+		err := New(srv.URL, nil).Ship(sampleEntries())
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "malformed") {
+			t.Fatalf("body %s must be reported malformed, got %v", body, err)
+		}
+	}
+}

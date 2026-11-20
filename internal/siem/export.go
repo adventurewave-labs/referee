@@ -187,38 +187,46 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 	// SIEM pipeline may accept them on retry; silent loss is not acceptable).
 	// OTLP encodes 64-bit integers as EITHER numbers OR strings — parse both.
 	var ack struct {
-		PartialSuccess struct {
+		PartialSuccess *struct {
 			RejectedLogRecords json.RawMessage `json:"rejectedLogRecords"`
 		} `json:"partialSuccess"`
 	}
 	body, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if rerr == nil && len(strings.TrimSpace(string(body))) == 0 {
+	if rerr != nil {
+		return fmt.Errorf("siem: read ack: %v", rerr)
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
 		return nil // empty 200 body: implicit full success
 	}
-	var rejected int
+	// ack present: partialSuccess is OPTIONAL — `{}` and omitted zero-valued
+	// fields are VALID full success (round-45). rejectedLogRecords, when
+	// present, is a 64-bit integer encoded as a number OR string; null,
+	// negative, and non-numeric encodings are malformed.
+	if err := json.Unmarshal(body, &ack); err != nil {
+		return fmt.Errorf("siem: malformed ack: %v", err)
+	}
+	if ack.PartialSuccess == nil || len(ack.PartialSuccess.RejectedLogRecords) == 0 {
+		return nil // full success
+	}
+	raw := []byte(ack.PartialSuccess.RejectedLogRecords)
+	rejected := 0
 	malformed := false
-	if rerr != nil || json.Unmarshal(body, &ack) != nil ||
-		len(ack.PartialSuccess.RejectedLogRecords) == 0 {
-		// body present but undecodable, or ack without the rejection field:
-		// not a clean success (round-44)
-		malformed = true
-	} else {
-		raw := []byte(ack.PartialSuccess.RejectedLogRecords)
-		if len(raw) > 0 && raw[0] == '"' {
-			// OTLP string encoding of a 64-bit integer
-			var strVal string
-			if json.Unmarshal(raw, &strVal) == nil {
-				if n, perr := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); perr == nil {
-					rejected = int(n)
-				} else {
-					malformed = true
-				}
+	if raw[0] == '"' {
+		var strVal string
+		if json.Unmarshal(raw, &strVal) == nil {
+			if n, perr := strconv.ParseInt(strings.TrimSpace(strVal), 10, 64); perr == nil && n >= 0 {
+				rejected = int(n)
 			} else {
 				malformed = true
 			}
-		} else if json.Unmarshal(raw, &rejected) != nil {
+		} else {
 			malformed = true
 		}
+	} else if string(bytes.TrimSpace(raw)) == "null" {
+		malformed = true
+	} else if json.Unmarshal(raw, &rejected) != nil || rejected < 0 {
+		malformed = true
 	}
 	if malformed {
 		return fmt.Errorf("siem: malformed partial-rejection acknowledgement")
