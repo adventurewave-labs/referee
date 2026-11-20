@@ -195,7 +195,13 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				if os.IsNotExist(err) {
 					continue // log not created yet
 				}
-				return err
+				// transient read error (rotation, fs hiccup): report and
+				// retry next tick — the tailer is best-effort by contract
+				// and never goes permanently dark on a hiccup (round-39)
+				if t.Report != nil {
+					t.Report(fmt.Errorf("siem: log read: %w", err))
+				}
+				continue
 			}
 			if len(entries) <= shipped {
 				continue
