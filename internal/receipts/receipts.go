@@ -32,6 +32,7 @@ type Entry struct {
 	BlockIDs []string  `json:"block_ids,omitempty"`
 	Axis     string    `json:"axis"` // e.g. "integrity=tainted conf=high"
 	ArgsHMAC string    `json:"args_hmac"`
+	PolicyHash string  `json:"policy_hash,omitempty"`
 	PrevHash string    `json:"prev_hash"`
 	Hash     string    `json:"hash"`
 }
@@ -56,6 +57,7 @@ type Record struct {
 	BlockIDs                             []string
 	Axis                                 string
 	ArgsCanonical                        string
+	PolicyHash                           string // producing policy's sha256 (observe binds analysis to it)
 }
 
 // Log is the append-only receipt chain.
@@ -144,6 +146,7 @@ func (l *Log) Append(r Record) (Entry, Head, error) {
 		BlockIDs: r.BlockIDs,
 		Axis:     r.Axis,
 		ArgsHMAC: ArgsHMAC(l.hmacKey, r.ArgsCanonical),
+		PolicyHash: r.PolicyHash,
 		PrevHash: l.prevHash,
 	}
 	e.Hash = e.computeHash()
@@ -233,6 +236,11 @@ func (e Entry) computeHash() string {
 	writeField(strings.Join(e.BlockIDs, ","))
 	writeField(e.Axis)
 	writeField(e.ArgsHMAC)
+	// PolicyHash joins the preimage ONLY when non-empty: legacy receipts
+	// predate the field and must keep verifying (round-89)
+	if e.PolicyHash != "" {
+		writeField(e.PolicyHash)
+	}
 	writeField(e.PrevHash)
 	return hex.EncodeToString(h.Sum(nil))
 }
@@ -428,3 +436,8 @@ func Search(path, task, tool, decision, rule string) ([]Entry, error) {
 	}
 	return out, nil
 }
+
+// VerifyEntries validates a parsed entry slice in memory: seq continuity and
+// hash links. Used by callers that read the log once and want analysis to
+// run on the SAME verified snapshot (no TOCTOU re-read).
+func VerifyEntries(entries []Entry) error { return checkChain(entries) }

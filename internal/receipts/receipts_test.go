@@ -312,3 +312,44 @@ func TestDelimiterAmbiguityClosed(t *testing.T) {
 		t.Fatalf("hash must be deterministic for identical entries")
 	}
 }
+
+// round-81: VerifyEntries validates a parsed slice in memory — the TOCTOU
+// fix for verify-then-analyze flows.
+func TestVerifyEntriesInMemory(t *testing.T) {
+	good := []Entry{
+		{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "t", Tool: "x", Rule: "r", Decision: "approve", Axis: "a", ArgsHMAC: "h", PrevHash: "genesis", Hash: "aaa"},
+		{Seq: 2, TS: time.Unix(1_700_000_001, 0).UTC(), Task: "t", Tool: "x", Rule: "r", Decision: "deny", Axis: "a", ArgsHMAC: "h", PrevHash: "aaa", Hash: "bbb"},
+	}
+	prev := "genesis"
+	for i := range good {
+		good[i].PrevHash = prev
+		good[i].Hash = good[i].computeHash() // same package: use the real encoding
+		prev = good[i].Hash
+	}
+	if err := VerifyEntries(good); err != nil {
+		t.Fatalf("consistent chain must verify: %v", err)
+	}
+	broken := append([]Entry(nil), good...)
+	broken[1].Rule = "tampered"
+	if err := VerifyEntries(broken); err == nil {
+		t.Fatalf("in-place tamper must fail verification")
+	}
+}
+
+// round-89: legacy receipts (PolicyHash empty) verify unchanged — the field
+// joins the hash preimage only when non-empty.
+func TestLegacyReceiptsWithoutPolicyHashVerify(t *testing.T) {
+	logPath, headsPath := tempLog(t)
+	l, err := Open(logPath, headsPath, []byte("k"), nil, 100)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, _, err := l.Append(Record{Task: "t", Tool: "x", Rule: "r", Decision: "approve", ArgsCanonical: "{}"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// entries written by this build carry PolicyHash "" in JSON; the chain
+	// must still verify (the empty field is excluded from the preimage)
+	if _, _, err := Verify(logPath, "", nil); err != nil {
+		t.Fatalf("legacy verify: %v", err)
+	}
+}

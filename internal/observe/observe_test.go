@@ -87,7 +87,7 @@ func TestSuggestNarrowingUnusedCaps(t *testing.T) {
 		entry(1, "called_tool", "auto:clean", "approve", "integrity=pass conf=pass"),
 	}
 	rep := Analyze(entries)
-	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"})
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}, "")
 	joined := strings.Join(sugg, "\n")
 	if !strings.Contains(joined, "UNUSED? task ops grants never_called_tool") {
 		t.Fatalf("unused-cap suggestion missing: %s", joined)
@@ -127,7 +127,7 @@ func TestSuggestNarrowingDeniedCallsNotExercised(t *testing.T) {
 		entry(2, "denied_tool", "cap:missing", "deny", "unchecked"),
 	}
 	rep := Analyze(entries)
-	joined := strings.Join(SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}), "\n")
+	joined := strings.Join(SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}, ""), "\n")
 	// the CAP GAP suggestion is the signal here; unused-flagging is NOT
 	// expected (a denied-only corpus proves no grant was exercised)
 	if !strings.Contains(joined, "CAP GAP? denied_tool") {
@@ -155,7 +155,7 @@ func TestSuggestNarrowingSharedToolGrants(t *testing.T) {
 		entry(1, "shared_tool", "auto:clean", "approve", "integrity=pass conf=pass"),
 	}
 	rep := Analyze(entries)
-	joined := strings.Join(SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}), "\n")
+	joined := strings.Join(SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}, ""), "\n")
 	if strings.Contains(joined, "grants shared_tool") {
 		t.Fatalf("approved tool must not be flagged unused: %s", joined)
 	}
@@ -179,7 +179,7 @@ func TestAbsentTaskClassesDegrades(t *testing.T) {
 		entry(1, "other", "auto:clean", "approve", "integrity=pass conf=pass"),
 	}
 	rep := Analyze(entries)
-	sugg := SuggestNarrowingWithTasks(rep, pol, entries, nil)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, nil, "")
 	joined := strings.Join(sugg, "\n")
 	if strings.Contains(joined, "UNUSED?") {
 		t.Fatalf("no attribution = no unused-cap suggestions (would be per-class wrong): %s", joined)
@@ -205,7 +205,7 @@ func TestPerClassAttribution(t *testing.T) {
 			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
 	}
 	rep := Analyze(entries)
-	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t-research": "research", "t-deploy": "deploy"})
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t-research": "research", "t-deploy": "deploy"}, "")
 	joined := strings.Join(sugg, "\n")
 	if strings.Contains(joined, "task research grants shared") {
 		t.Fatalf("research-approved grant must not be flagged unused")
@@ -236,7 +236,7 @@ func TestPartialAttributionSuppressesUnused(t *testing.T) {
 			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
 	}
 	rep := Analyze(entries)
-	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"known": "ops"})
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"known": "ops"}, "")
 	joined := strings.Join(sugg, "\n")
 	if strings.Contains(joined, "UNUSED?") {
 		t.Fatalf("partial attribution must suppress unused conclusions: %s", joined)
@@ -265,7 +265,7 @@ func TestEmptyClassValueUnmapped(t *testing.T) {
 	// mapping "t" → "" (empty): the approved call is UNMAPPED, so no unused
 	// conclusion is supportable — the guard suppresses with the note, and
 	// the deploy grant is NOT flagged for pruning (fail-safe direction)
-	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": ""})
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": ""}, "")
 	joined := strings.Join(sugg, "\n")
 	if strings.Contains(joined, "UNUSED? task deploy") {
 		t.Fatalf("empty-class mapping must not produce unused conclusions: %s", joined)
@@ -274,7 +274,7 @@ func TestEmptyClassValueUnmapped(t *testing.T) {
 		t.Fatalf("completeness note must report the unmapped approved call: %s", joined)
 	}
 	// with a REAL mapping the grant is exercised and not flagged
-	sugg2 := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "deploy"})
+	sugg2 := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "deploy"}, "")
 	for _, s := range sugg2 {
 		if strings.Contains(s, "UNUSED? task deploy") {
 			t.Fatalf("real mapping must exercise the grant: %v", sugg2)
@@ -300,12 +300,81 @@ func TestUnknownClassValuesSuppressUnused(t *testing.T) {
 	rep := Analyze(entries)
 	// mapped to a TYPO class ("deplyo") — usage is real but attributed to a
 	// class the policy doesn't know; the deploy grant must NOT be pruned
-	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "deplyo"})
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "deplyo"}, "")
 	joined := strings.Join(sugg, "\n")
 	if strings.Contains(joined, "UNUSED? task deploy") {
 		t.Fatalf("unknown-class attribution must suppress pruning suggestions: %s", joined)
 	}
 	if !strings.Contains(joined, "not in the policy") {
 		t.Fatalf("unknown classes must be named: %s", joined)
+	}
+}
+
+// round-81: a partial mapping map (some approved receipts unmapped) suppresses
+// conclusions — covered by the completeness note test above. Here: the same
+// but with a policy present, asserting the UNUSED suggestion is suppressed.
+func TestPartialAttributionWithPolicySuppresses(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps:  []policy.CapDecl{{Tool: "granted", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "known", Tool: "granted",
+			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+		{Seq: 2, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "unknown", Tool: "granted",
+			Rule: "auto:clean", Decision: "approve", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+	}
+	rep := Analyze(entries)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"known": "ops"}, "")
+	joined := strings.Join(sugg, "\n")
+	if strings.Contains(joined, "UNUSED?") {
+		t.Fatalf("unknown-class approved call overlapping the grant must suppress unused conclusions: %s", joined)
+	}
+}
+
+// round-74: CapGaps counts ONLY missing-cap denials/challenges — approved
+// calls with cap-ish rules and unrelated cap-prefixed rules are not gaps.
+func TestCapGapsPrecision(t *testing.T) {
+	entries := []receipts.Entry{
+		entry(1, "x", "cap:missing", "deny", "unchecked"),                // gap ✓
+		entry(2, "x", "cap:missing", "challenge", "unchecked"),           // gap ✓
+		entry(3, "x", "cap:missing-resolved", "deny", "unchecked"),       // PREFIX, denied: NOT a gap (round-75)
+		entry(4, "x", "cap:other-rule", "deny", "unchecked"),             // not cap:missing: not a gap
+		entry(5, "x", "auto:clean", "approve", "checked"),                // clean: not a gap
+	}
+	rep := Analyze(entries)
+	var gaps int
+	for _, ts := range rep.Tools {
+		gaps += ts.CapGaps
+	}
+	if gaps != 2 {
+		t.Fatalf("cap gaps must count only exact missing-cap deny/challenge, got %d", gaps)
+	}
+}
+
+// round-74: a zero-approval corpus still supports unused-cap detection when
+// its decisions are fully attributed — denial histories prove grants unused.
+func TestZeroApprovalCorpusStillDetects(t *testing.T) {
+	f := &policy.File{
+		Version: 1,
+		Tasks: []policy.TaskClass{{
+			Class: "ops",
+			Caps:  []policy.CapDecl{{Tool: "granted", Pattern: "**"}},
+		}},
+	}
+	pol, _ := policy.Compile(f)
+	entries := []receipts.Entry{
+		{Seq: 1, TS: time.Unix(1_700_000_000, 0).UTC(), Task: "t", Tool: "other",
+			Rule: "auto:clean", Decision: "deny", ArgsHMAC: "h", PrevHash: "p", Hash: "x"},
+	}
+	rep := Analyze(entries)
+	sugg := SuggestNarrowingWithTasks(rep, pol, entries, map[string]string{"t": "ops"}, "")
+	joined := strings.Join(sugg, "\n")
+	if !strings.Contains(joined, "UNUSED? task ops grants granted") {
+		t.Fatalf("zero-approval but fully-attributed corpus must still flag unused grants: %s", joined)
 	}
 }
