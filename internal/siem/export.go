@@ -399,6 +399,10 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				}
 				shipped = 0
 				lastHash = ""
+				// retry budgets key on seq: a new history's receipts must get
+				// fresh budgets (round-74 — stale counts dropped new receipts
+				// on their first rejection)
+				singletonRetries = map[uint64]int{}
 			}
 			if len(entries) <= shipped {
 				continue

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -905,3 +906,88 @@ func TestHeldSingletonRetriesOnNextTick(t *testing.T) {
 		t.Fatalf("tailer did not stop")
 	}
 }
+
+// round-74: retry budgets reset when the log history is replaced — a new
+// history's receipts get fresh budgets even if they reuse a seq whose old
+// incarnation exhausted its retries.
+func TestRetryBudgetResetsOnLogReplacement(t *testing.T) {
+	logPath, l := tempLog(t)
+	// one singleton that always gets rejected while its history is current
+	l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "old-solo", Decision: "approve", ArgsCanonical: "{}"})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if strings.Contains(string(b), "always-rejected") {
+			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+			return
+		}
+		// record only POST bodies — the GET poller must not clobber
+		if r.Method == http.MethodPost {
+			recText.Store(string(b))
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 20 * time.Millisecond,
+		MaxSingletonRetries: 2, Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	// burn the old singleton's budget (2 rejects + drop = 3 posts)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		bodies := strings.Count(recText.Load().(string), "always-rejected")
+		if bodies >= 3 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// REPLACE the log: new chain, seq 1 carries "always-rejected" again (a
+	// DIFFERENT receipt that the endpoint now accepts)
+	alt := filepath.Join(t.TempDir(), "alt.jsonl")
+	l2, err := receipts.Open(alt, "", []byte("siem-test-key"), nil, 100)
+	if err != nil {
+		t.Fatalf("alt: %v", err)
+	}
+	if _, _, err := l2.Append(receipts.Record{Task: "t", Tool: "x", Rule: "new-history-solo", Decision: "approve", ArgsCanonical: "{}"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if werr := copyFile(alt, logPath); werr != nil {
+		t.Fatalf("replace: %v", werr)
+	}
+
+	// the new receipt must SHIP (fresh budget) — with stale retry state keyed
+	// by seq 1, its first rejection would have dropped it immediately
+	shipped := false
+	postReplaceDeadline := time.Now().Add(5 * time.Second) // fresh window
+	for time.Now().Before(postReplaceDeadline) {
+		bodies := recText.Load().(string)
+		if strings.Contains(bodies, "new-history-solo") {
+			shipped = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	close(stop)
+	<-time.After(100 * time.Millisecond)
+	if !shipped {
+		t.Fatalf("new-history receipt was dropped on stale retry state")
+	}
+}
+
+func recBody(url string) string {
+	resp, err := http.Get(url)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return recText.Load().(string)
+}
+
+var recText atomic.Value // string
+
+func init() { recText.Store("") }
