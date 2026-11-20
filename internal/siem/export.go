@@ -370,7 +370,10 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 	// log with a different history resets the cursor (re-export; SIEM
 	// dedupes on referee.seq) rather than silently skipping new receipts
 	// (round-42)
-	singletonRetries := map[uint64]int{} // seq → rejection count (round-71)
+	singletonRetries := map[string]int{} // "seq|chain-hash" → rejection count:
+	// keyed by CONTENT (chain hash), not seq alone — a replacement receipt
+	// reusing a seq gets a fresh budget in every cursor state (round-77;
+	// stale seq-only keys transferred exhausted budgets across histories)
 	tick := time.NewTicker(t.Interval)
 	defer tick.Stop()
 	for {
@@ -402,7 +405,7 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				// retry budgets key on seq: a new history's receipts must get
 				// fresh budgets (round-74 — stale counts dropped new receipts
 				// on their first rejection)
-				singletonRetries = map[uint64]int{}
+				singletonRetries = map[string]int{}
 			}
 			if len(entries) <= shipped {
 				continue
@@ -452,7 +455,7 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 // rejections HALVE the range until singletons; a singleton the endpoint
 // rejects is dropped loudly (reported) and consumed, so one poisoned record
 // can never stall every receipt after it.
-func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, depth int, singletonRetries map[uint64]int) int {
+func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, depth int, singletonRetries map[string]int) int {
 	if i >= j {
 		return 0
 	}
@@ -471,19 +474,21 @@ func (t *Tailer) shipRange(ctx context.Context, entries []receipts.Entry, i, j, 
 		// One rejection is NOT persistence: retry a bounded number of ticks
 		// before dropping (round-71 — temporary endpoint conditions must not
 		// become permanent export loss). Holding the cursor during the retry
-		// window is the price of never silently losing a receipt.
-		key := entries[i].Seq
+		// window is the price of never silently losing a receipt. The budget
+		// key includes the chain hash: a replacement receipt with the same
+		// seq but different content is a NEW receipt with a NEW budget.
+		key := fmt.Sprintf("%d|%s", entries[i].Seq, entries[i].Hash)
 		if t.MaxSingletonRetries > 0 {
 			singletonRetries[key]++
 			if singletonRetries[key] <= t.MaxSingletonRetries {
 				if t.Report != nil {
-					t.Report(fmt.Errorf("siem: singleton seq %d rejected (attempt %d/%d) — retrying", key, singletonRetries[key], t.MaxSingletonRetries))
+					t.Report(fmt.Errorf("siem: singleton [%s] rejected (attempt %d/%d) — retrying", key, singletonRetries[key], t.MaxSingletonRetries))
 				}
 				return 0 // hold the cursor; retry next tick
 			}
 		}
 		if t.Report != nil {
-			t.Report(fmt.Errorf("siem: endpoint persistently rejected seq %d after %d retries — DROPPING it so later receipts export", key, t.MaxSingletonRetries))
+			t.Report(fmt.Errorf("siem: endpoint persistently rejected [%s] after %d retries — DROPPING it so later receipts export", key, t.MaxSingletonRetries))
 		}
 		return 1
 	}

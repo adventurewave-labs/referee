@@ -743,8 +743,11 @@ func TestPartialRejectionSplitsAndSkips(t *testing.T) {
 			t.Fatalf("good record %s never shipped", good)
 		}
 	}
-	if !strings.Contains(joinedReports, "DROPPING it") || !strings.Contains(joinedReports, "seq 3") {
+	if !strings.Contains(joinedReports, "DROPPING it") {
 		t.Fatalf("poisoned record (seq 3) must be reported as dropped; reports: %s", joinedReports)
+	}
+	if !strings.Contains(joinedReports, "rejected (attempt 3/3)") {
+		t.Fatalf("the retry budget must be exhausted before the drop; reports: %s", joinedReports)
 	}
 
 	close(stop)
@@ -1032,3 +1035,99 @@ func recBody(url string) string {
 var recText atomic.Value // string
 
 func init() { recText.Store("") }
+
+// round-77: replacement while the cursor is still ZERO — the first receipt is
+// mid-retry-budget when the history flips. With seq-only keys the replacement
+// inherits the exhausted budget and is dropped on its first rejection; with
+// hash-keyed budgets it gets fresh retries and ships.
+func TestReplacementWhileCursorZero(t *testing.T) {
+	logPath, l := tempLog(t)
+	l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "v1-solo", Decision: "approve", ArgsCanonical: "{}"})
+
+	var mu sync.Mutex
+	var v1Rejects, v2Rejects, v2Accepts int
+	phase := "v1"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(io.LimitReader(r.Body, 1<<20)) // phase decides; body unused
+		mu.Lock()
+		defer mu.Unlock()
+		switch phase {
+		case "v1":
+			v1Rejects++ // always reject v1: hold at cursor 0
+			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+		case "v2":
+			v2Rejects++
+			if v2Rejects == 1 {
+				// the DISCRIMINATOR rejection: fresh budget retries; stale
+				// seq-keyed budget drops here
+				w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+				return
+			}
+			v2Accepts++
+			w.WriteHeader(200)
+		}
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 20 * time.Millisecond,
+		MaxSingletonRetries: 1, Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	// wait until v1 has been rejected once (held at cursor 0)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := v1Rejects
+		mu.Unlock()
+		if n >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// replace the history WHILE cursor is zero: same seq, different content
+	alt := filepath.Join(t.TempDir(), "alt.jsonl")
+	l2, err := receipts.Open(alt, "", []byte("siem-test-key"), nil, 100)
+	if err != nil {
+		t.Fatalf("alt: %v", err)
+	}
+	if _, _, err := l2.Append(receipts.Record{Task: "t", Tool: "x", Rule: "v2-solo", Decision: "approve", ArgsCanonical: "{}"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if werr := copyFile(alt, logPath); werr != nil {
+		t.Fatalf("replace: %v", werr)
+	}
+	mu.Lock()
+	phase = "v2"
+	mu.Unlock()
+
+	// v2 must be rejected once (fresh budget holds), then accepted
+	deadline = time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		ok := v2Accepts >= 1 && v2Rejects >= 1
+		mu.Unlock()
+		if ok {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	rej, acc := v2Rejects, v2Accepts
+	mu.Unlock()
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
+	}
+	if acc < 1 || rej < 1 {
+		close(stop)
+		t.Fatalf("replacement receipt was dropped on stale budget (rejects=%d accepts=%d)", rej, acc)
+	}
+}
