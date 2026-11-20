@@ -417,6 +417,7 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				if end > len(entries) {
 					end = len(entries)
 				}
+				rangeLen := end - shipped // captured BEFORE advancing (round-73)
 				// partial rejection: the batch splits recursively down to
 				// singletons — accepted runs advance the cursor, a singleton
 				// the endpoint persistently rejects is DROPPED LOUDLY (reported
@@ -429,12 +430,12 @@ func (t *Tailer) Run(stop <-chan struct{}) error {
 				if shipped > 0 {
 					lastHash = entries[shipped-1].Hash
 				}
-				if consumed < end-shipped {
+				if consumed < rangeLen {
 					// the drain stopped at a held singleton (retry budget):
 					// advancing the successful prefix is done — resuming the
 					// held singleton in the SAME tick would burn the retry
 					// budget in milliseconds instead of over the promised
-					// retry window (round-72)
+					// retry window (round-72/73)
 					break
 				}
 			}

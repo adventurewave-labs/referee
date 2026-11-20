@@ -822,3 +822,86 @@ func TestSingletonRejectedOnceThenAccepted(t *testing.T) {
 		t.Fatalf("tailer did not stop")
 	}
 }
+
+// round-73: an accepted prefix followed by a temporarily-rejected singleton
+// — the singleton's retry must wait for the NEXT tick, not burn its budget
+// in the same millisecond (the round-73 bug re-POSTed immediately).
+func TestHeldSingletonRetriesOnNextTick(t *testing.T) {
+	logPath, l := tempLog(t)
+	l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "accepted-prefix", Decision: "approve", ArgsCanonical: "{}"})
+	l.Append(receipts.Record{Task: "t", Tool: "x", Rule: "held-solo", Decision: "approve", ArgsCanonical: "{}"})
+
+	var mu sync.Mutex
+	var soloRejects []time.Time // attempts 1..2: rejected
+	var soloAccept time.Time    // attempt 3: accepted
+	soloPosts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if !strings.Contains(string(b), "held-solo") {
+			w.WriteHeader(200) // the accepted prefix
+			return
+		}
+		mu.Lock()
+		soloPosts++
+		n := soloPosts
+		if n <= 2 {
+			soloRejects = append(soloRejects, time.Now())
+		} else if n == 3 {
+			soloAccept = time.Now()
+		}
+		mu.Unlock()
+		if n <= 2 {
+			// reject the singleton's first two POSTs: attempt 2 happens when
+			// the accepted-prefix drain re-enters shipRange within the same
+			// tick (the round-73 bypass) — with the fix, attempt 3 only comes
+			// on the next tick
+			w.Write([]byte(`{"partialSuccess":{"rejectedLogRecords":1}}`))
+			return
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	tl := &Tailer{Log: New(srv.URL, nil), LogPath: logPath, Interval: 200 * time.Millisecond,
+		MaxSingletonRetries: 5, Report: func(err error) {}}
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- tl.Run(stop) }()
+
+	// wait until the singleton is ACCEPTED (attempt 3, on a later tick)
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := soloPosts
+		mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	accept := soloAccept
+	var lastReject time.Time
+	if len(soloRejects) > 0 {
+		lastReject = soloRejects[len(soloRejects)-1]
+	}
+	mu.Unlock()
+	if accept.IsZero() {
+		t.Fatalf("singleton never accepted (soloPosts never reached 3)")
+	}
+	gap := accept.Sub(lastReject)
+	if gap < 100*time.Millisecond {
+		close(stop)
+		t.Fatalf("held singleton retried after only %s — the tick window was bypassed", gap)
+	}
+
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("tailer did not stop")
+	}
+}
