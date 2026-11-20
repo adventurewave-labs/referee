@@ -26,9 +26,16 @@ import (
 	"github.com/adventurewave-labs/referee/internal/receipts"
 )
 
-// AnyValue is the OTLP AnyValue union; only the kvlistValue branch is used.
+// AnyValue is the OTLP AnyValue union (kvlistValue and arrayValue branches).
 type AnyValue struct {
-	KVList *KVList `json:"kvlistValue,omitempty"`
+	KVList *KVList   `json:"kvlistValue,omitempty"`
+	StringValue string `json:"stringValue,omitempty"`
+	Array  *AnyArray `json:"arrayValue,omitempty"`
+}
+
+// AnyArray is an OTLP array of AnyValues.
+type AnyArray struct {
+	Values []AnyValue `json:"values"`
 }
 
 // KVList is an OTLP KeyValueList.
@@ -48,16 +55,11 @@ type Record struct {
 
 // Attribute is one OTLP key/value attribute.
 type Attribute struct {
-	Key   string  `json:"key"`
-	Value anyValue `json:"value"`
+	Key   string   `json:"key"`
+	Value AnyValue `json:"value"`
 }
 
-// anyValue is the OTLP AnyValue union (JSON encoding uses the set field).
-type anyValue struct {
-	StringValue string `json:"stringValue,omitempty"`
-}
-
-func strAttr(k, v string) Attribute { return Attribute{Key: k, Value: anyValue{StringValue: v}} }
+func strAttr(k, v string) Attribute { return Attribute{Key: k, Value: AnyValue{StringValue: v}} }
 
 // severity maps a gate decision to an OTLP severity. Denials are the
 // security-relevant signal: WARN. Challenges: NOTICE. Approvals: INFO.
@@ -89,8 +91,15 @@ func ToOTLP(e receipts.Entry) Record {
 		strAttr("referee.prev_hash", e.PrevHash),
 		strAttr("referee.hash", e.Hash),
 	}
-	for _, id := range e.BlockIDs {
-		attrs = append(attrs, strAttr("referee.block_id", id))
+	// block IDs as ONE array-valued attribute: OTLP attribute keys must be
+	// unique — repeated keys lose associations when consumers collapse them
+	// (round-53)
+	if len(e.BlockIDs) > 0 {
+		ids := make([]AnyValue, 0, len(e.BlockIDs))
+		for _, id := range e.BlockIDs {
+			ids = append(ids, AnyValue{StringValue: id})
+		}
+		attrs = append(attrs, Attribute{Key: "referee.block_ids", Value: AnyValue{Array: &AnyArray{Values: ids}}})
 	}
 	return Record{
 		TimeUnixNano: fmt.Sprint(e.TS.UnixNano()),
@@ -213,6 +222,11 @@ func (x *Exporter) ShipContext(ctx context.Context, entries []receipts.Entry) er
 	trimmed := strings.TrimSpace(string(body))
 	if trimmed == "" {
 		return nil // empty 200 body: implicit full success
+	}
+	if trimmed == "null" {
+		// JSON null unmarshals as a no-op and would look like full success —
+		// a present-but-null ack is malformed (round-53)
+		return fmt.Errorf("siem: malformed ack (null body)")
 	}
 	// ack present: partialSuccess is OPTIONAL — `{}` and omitted zero-valued
 	// fields are VALID full success (round-45). rejectedLogRecords, when

@@ -571,3 +571,68 @@ func TestOversizedAckRejected(t *testing.T) {
 		t.Fatalf("oversized ack must be rejected, got %v", err)
 	}
 }
+
+// round-53: multiple block IDs encode as ONE array-valued attribute —
+// repeated attribute keys would lose associations (OTLP keys are unique).
+func TestMultipleBlockIDsArrayValued(t *testing.T) {
+	c := &bodyRecorder{}
+	ts := httptest.NewServer(c.handler())
+	defer ts.Close()
+
+	entries := sampleEntries()
+	entries[1].BlockIDs = []string{"b-1", "b-2", "b-3"}
+	if err := New(ts.URL, nil).Ship(entries); err != nil {
+		t.Fatalf("ship: %v", err)
+	}
+
+	var payload struct {
+		ResourceLogs []struct {
+			ScopeLogs []struct {
+				LogRecords []struct {
+					Attributes []struct {
+						Key   string `json:"key"`
+						Value struct {
+							ArrayValue *struct {
+								Values []struct {
+									StringValue string `json:"stringValue"`
+								} `json:"values"`
+							} `json:"arrayValue"`
+						} `json:"value"`
+					} `json:"attributes"`
+				} `json:"logRecords"`
+			} `json:"scopeLogs"`
+		} `json:"resourceLogs"`
+	}
+	if err := json.Unmarshal([]byte(c.body()), &payload); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	rec := payload.ResourceLogs[0].ScopeLogs[0].LogRecords[1]
+	found := false
+	for _, a := range rec.Attributes {
+		if a.Key == "referee.block_ids" && a.Value.ArrayValue != nil {
+			found = true
+			var ids []string
+			for _, v := range a.Value.ArrayValue.Values {
+				ids = append(ids, v.StringValue)
+			}
+			if strings.Join(ids, ",") != "b-1,b-2,b-3" {
+				t.Fatalf("array ids wrong: %v", ids)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("array-valued block_ids attribute missing")
+	}
+}
+
+// round-53: a JSON-null ack body is malformed, not full success.
+func TestNullAckBodyMalformed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("null"))
+	}))
+	defer srv.Close()
+	err := New(srv.URL, nil).Ship(sampleEntries())
+	if err == nil || !strings.Contains(err.Error(), "malformed") {
+		t.Fatalf("null ack body must be malformed, got %v", err)
+	}
+}
