@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "repository": "adventurewave-labs/referee",
+  "license": "MIT",
+  "github": {
+    "visibility": "public",
+    "description": "MCP middleware for task-scoped agent authorization, policy-based redaction, and verifiable tool-call receipts.",
+    "topics": ["ai-agents", "authorization", "audit-logging", "go", "information-flow-control", "mcp", "otlp", "policy-engine"],
+    "pages": {
+      "source_path": "/docs",
+      "homepage": "https://adventurewave-labs.github.io/referee/"
+    },
+    "uat": [
+      {"path": "", "contains": "Put MCP tool calls under policy.", "link": "assets/referee-infographic.png"},
+      {"path": "", "contains": "SHA-256 checksums", "link": "llms.txt"},
+      {"path": "assets/release.css", "contains": "--violet:"},
+      {"path": "assets/referee-infographic.svg", "contains": "Verifiable receipt"},
+      {"path": "assets/referee-banner.svg", "contains": "@keyframes dispatch"}
+    ],
+    "discovery": {
+      "robots": "shared",
+      "agents": ["Googlebot", "OAI-SearchBot"],
+      "sitemap": "sitemap.xml",
+      "llms": "llms.txt",
+      "llms_full": "llms-full.txt",
+      "pages": [{"path": "", "lang": "en", "open_graph": true, "schema_types": ["SoftwareApplication"]}]
+    }
+  },
+  "artifacts": {
+    "readme": "README.md",
+    "banner_svg": "docs/assets/referee-banner.svg",
+    "infographic_svg": "docs/assets/referee-infographic.svg",
+    "infographic_png": "docs/assets/referee-infographic.png",
+    "mark_svg": "docs/assets/referee-mark.svg",
+    "release_notes": "CHANGELOG.md"
+  }
+}

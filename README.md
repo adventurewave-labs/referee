@@ -1,5 +1,9 @@
 # Referee
 
+![Referee animated MCP policy diagram](docs/assets/referee-banner.svg)
+
+[Release landing](https://adventurewave-labs.github.io/referee/) · [Downloads](https://github.com/adventurewave-labs/referee/releases/tag/v0.1.0) · [Policy cookbook](docs/policy-cookbook.md)
+
 **Taint-tracking & task-scoped authorization middleware for agents.**
 A middleware proxy between LLM agents and their tools: every untrusted input
 entering the agent context is tainted with provenance labels; each tool call
@@ -9,8 +13,7 @@ content?) — and auto-approved only when clean on every axis the policy
 gates. Actions the policy can't clear get per-task, expiring capability
 tokens and redacted human challenges — never ambient authority.
 
-Design: PRD "Referee" v0.4 (adventurewave-labs/agentic-cybersecurity-development-prds,
-`docs/prd/referee.md`) — the IFC design follows CaMeL (arXiv:2503.18826)
+Design: The information-flow control model follows CaMeL (arXiv:2503.18826)
 with set-based influence probes, task-scoped authorization
 (arXiv:2610.05840), and the operationalization gaps from arXiv:2505.22852.
 
@@ -35,6 +38,19 @@ synchronously* on its verdict — that blocking is a stated property, not a
 bug.
 
 ## Quick start
+
+Download the archive for Linux x86-64 or macOS Apple Silicon from the
+[v0.1.0 release](https://github.com/adventurewave-labs/referee/releases/tag/v0.1.0).
+Match the archive's SHA-256 against `SHA256SUMS` before unpacking it. Use
+`sha256sum <archive>` on Linux or `shasum -a 256 <archive>` on macOS.
+
+From a source checkout, check the sample policy without starting a server.
+
+```bash
+go build -o referee ./cmd/referee
+./referee policy check --policy examples/policy-coding-agent.yaml
+```
+
 
 ```bash
 # self-contained end-to-end demo (poisoned page → exfil attempt →
@@ -87,7 +103,7 @@ signals bounded by TTL).
 
 **Not shipped yet:** SSE streaming upstream (JSON mode only), idle-heuristic
 task-end (experimental opt-in per PRD; explicit-only v1 shipped), encrypted
-evidence escrow (off by default per PRD), framework presets (P1).
+evidence escrow (off by default per PRD), and Observe mode.
 
 ## Security posture
 
@@ -109,4 +125,4 @@ go run ./cmd/referee tune --corpus examples/probe-corpus.yaml --policy examples/
 CI asserts the §8 regression suite (per-normalization secret encodings,
 double-injection set-probe) and the containment-path latency budget.
 
-License: TBD before open-sourcing (currently private to adventurewave-labs).
+Licensed under the [MIT License](LICENSE).

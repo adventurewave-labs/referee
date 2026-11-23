@@ -1,0 +1,11 @@
+# Referee
+
+> Referee is MIT-licensed Model Context Protocol (MCP) middleware that enforces agent tool policy and records decisions.
+
+## Start here
+
+- [Official Referee landing page](https://adventurewave-labs.github.io/referee/): Product overview and verified release download links.
+- [Setup and CLI guide](https://github.com/adventurewave-labs/referee#quick-start): Configure Referee between an agent and its MCP server.
+- [Referee v0.1.0](https://github.com/adventurewave-labs/referee/releases/tag/v0.1.0): Linux and Apple Silicon binaries, source, and SHA-256 checksums.
+- [Policy cookbook](https://github.com/adventurewave-labs/referee/blob/main/docs/policy-cookbook.md): Explain policy rules, task scope, and approval flows.
+- [Referee documentation summary](https://adventurewave-labs.github.io/referee/llms-full.txt): Capabilities and limitations of this release.

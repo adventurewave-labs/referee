@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Referee</title>
+  <rect width="64" height="64" rx="14" fill="#4e369b"/>
+  <path d="M16 21h32M16 32h32M16 43h32M25 14v36m14-36v36" stroke="#e8e2ff" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="5" fill="#f5d685"/>
+</svg>
