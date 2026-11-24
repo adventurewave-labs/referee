@@ -28,6 +28,15 @@
   },
   "artifacts": {
     "readme": "README.md",
+    "readme_downloads": [
+      "referee-{tag}-linux-amd64.tar.gz",
+      "referee-{tag}-darwin-arm64.tar.gz",
+      "SHA256SUMS"
+    ],
+    "codespace_qa": {
+      "script": "scripts/release-smoke.py",
+      "asset": "referee-{tag}-linux-amd64.tar.gz"
+    },
     "banner_svg": "docs/assets/referee-banner.svg",
     "infographic_svg": "docs/assets/referee-infographic.svg",
     "infographic_png": "docs/assets/referee-infographic.png",

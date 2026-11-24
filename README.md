@@ -4,18 +4,16 @@
 
 [Release landing](https://adventurewave-labs.github.io/referee/) · [Downloads](https://github.com/adventurewave-labs/referee/releases/tag/v0.1.0) · [Policy cookbook](docs/policy-cookbook.md)
 
-**Taint-tracking & task-scoped authorization middleware for agents.**
-A middleware proxy between LLM agents and their tools: every untrusted input
-entering the agent context is tainted with provenance labels; each tool call
-is gated along two independent axes — *injection* (did untrusted content
-influence the call?) and *exfiltration* (does the call move high-sensitivity
-content?) — and auto-approved only when clean on every axis the policy
-gates. Actions the policy can't clear get per-task, expiring capability
-tokens and redacted human challenges — never ambient authority.
+**Taint tracking and task-scoped authorization for MCP tool calls.**
+Referee is a proxy between an agent and its MCP tools. It labels tool content
+that passes through the proxy and checks whether a call is within the task's
+capability scope. The configured gate evaluates influence from untrusted
+content and the sensitivity of arguments separately. Policy can allow a call,
+route it for human approval, or deny it.
 
-Design: The information-flow control model follows CaMeL (arXiv:2503.18826)
-with set-based influence probes, task-scoped authorization
-(arXiv:2610.05840), and the operationalization gaps from arXiv:2505.22852.
+The design draws on [CaMeL](https://arxiv.org/abs/2503.18813),
+[task-scoped authorization research](https://arxiv.org/abs/2610.05840), and
+[Operationalizing CaMeL](https://arxiv.org/abs/2505.22852).
 
 ## How it works
 
@@ -31,48 +29,69 @@ agent ──MCP──► referee (this proxy) ──MCP──► real tools
                  └─ challenges: redacted Slack buttons / local approver, timeout = deny
 ```
 
-The gate is deterministic where argument containment holds
-(< 5 ms/call, asserted in CI); the influence probe runs only on
-integrity-gated calls without containment matches, and the gate *blocks
-synchronously* on its verdict — that blocking is a stated property, not a
-bug.
+CI checks a 5 ms budget for the deterministic containment path. For an
+integrity-gated call that needs an influence probe, Referee waits for the
+configured judge before returning a decision.
 
 ## Quick start
 
-Download the archive for Linux x86-64 or macOS Apple Silicon from the
-[v0.1.0 release](https://github.com/adventurewave-labs/referee/releases/tag/v0.1.0).
-Match the archive's SHA-256 against `SHA256SUMS` before unpacking it. Use
-`sha256sum <archive>` on Linux or `shasum -a 256 <archive>` on macOS.
+Download the archive for your machine and [SHA256SUMS](https://github.com/adventurewave-labs/referee/releases/download/v0.1.0/SHA256SUMS)
+into the same directory.
 
-From a source checkout, check the sample policy without starting a server.
+| Platform | Download |
+|---|---|
+| Linux x86-64 | [referee-v0.1.0-linux-amd64.tar.gz](https://github.com/adventurewave-labs/referee/releases/download/v0.1.0/referee-v0.1.0-linux-amd64.tar.gz) |
+| macOS Apple Silicon | [referee-v0.1.0-darwin-arm64.tar.gz](https://github.com/adventurewave-labs/referee/releases/download/v0.1.0/referee-v0.1.0-darwin-arm64.tar.gz) |
+
+### Linux x86-64
+
+```bash
+checksum=$(grep -F '  referee-v0.1.0-linux-amd64.tar.gz' SHA256SUMS) &&
+printf '%s\n' "$checksum" | sha256sum -c - &&
+tar -xzf referee-v0.1.0-linux-amd64.tar.gz &&
+cd referee-v0.1.0 &&
+./referee policy check --policy examples/policy-coding-agent.yaml
+```
+
+### macOS Apple Silicon
+
+```bash
+checksum=$(grep -F '  referee-v0.1.0-darwin-arm64.tar.gz' SHA256SUMS) &&
+printf '%s\n' "$checksum" | LC_ALL=C shasum -a 256 -c - &&
+LC_ALL=C tar -xzf referee-v0.1.0-darwin-arm64.tar.gz &&
+cd referee-v0.1.0 &&
+./referee policy check --policy examples/policy-coding-agent.yaml
+```
+
+The policy check runs locally without starting an MCP server. See
+[framework presets](docs/frameworks.md) to connect your client and configure an
+upstream server.
+
+### Build from source
+
+Use Go 1.22 or later from the repository checkout.
 
 ```bash
 go build -o referee ./cmd/referee
 ./referee policy check --policy examples/policy-coding-agent.yaml
 ```
 
-
-```bash
-# self-contained end-to-end demo (poisoned page → exfil attempt →
-# redacted challenge; clean run → auto-approve) — no network needed
-go run ./cmd/referee demo
-
-# point a coding agent at Referee instead of the raw MCP server:
-referee serve --policy examples/policy-coding-agent.yaml \
-  --mode stdio --upstream-cmd "uvx mcp-server-fetch"
-```
-
-The agent's tool config points at Referee; no framework changes.
+Run the bundled demo locally with `./referee demo`.
 
 ## Verify receipts
 
+Use a trusted copy of the public key from your deployment to verify signed
+batch heads. Save that copy as `trusted-referee-pubkey.hex` for this example.
+
 ```bash
-referee verify --log referee-receipts.jsonl --heads referee-heads.jsonl --pubkey <pub>
-referee why --log referee-receipts.jsonl --decision deny --task deploy-preview-42
+./referee verify --log referee-receipts.jsonl --heads referee-heads.jsonl \
+  --pubkey trusted-referee-pubkey.hex
+./referee why --log referee-receipts.jsonl --decision deny --task deploy-preview-42
 ```
 
-Every gate decision emits a receipt: which blocks influenced the call and
-which policy clause fired — args are keyed-HMAC'd, never stored raw.
+Receipts record the decision and applicable rule. Argument evidence is stored
+as keyed HMACs. See the [threat model](docs/threat-model.md) for the trust
+assumptions behind the receipt chain.
 
 ## Package map
 
@@ -107,10 +126,10 @@ evidence escrow (off by default per PRD), and Observe mode.
 
 ## Security posture
 
-Referee is a choke point: compromise of the proxy = compromise of the
-boundary. Minimal parser surface (strict JSON-RPC schema), memory-safe Go,
-fuzz targets on the decoders (`make fuzz`), no eval. Judge prompts treat
-block content as hostile data. Secrets never enter git, argv, or logs.
+Referee enforces policy for calls routed through its MCP proxy. Protect the
+proxy process, its policy, and its signing keys as part of the trust boundary.
+Supply credentials through the documented environment variables. The
+[threat model](docs/threat-model.md) covers bypass paths and remaining limits.
 
 ## Development
 
