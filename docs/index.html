@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Referee | Policy enforcement for MCP tool calls</title>
+  <meta name="description" content="Referee is open-source MCP middleware for enforcing agent tool policy, issuing task-scoped approvals, and verifying decision receipts.">
+  <link rel="canonical" href="https://adventurewave-labs.github.io/referee/">
+  <link rel="stylesheet" href="assets/release.css">
+  <link rel="icon" href="assets/referee-mark.svg" type="image/svg+xml">
+  <link rel="describedby" href="llms.txt" type="text/plain">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Referee | Policy enforcement for MCP tool calls">
+  <meta property="og:description" content="Enforce tool policy at the MCP boundary and keep verifiable decision receipts.">
+  <meta property="og:url" content="https://adventurewave-labs.github.io/referee/">
+  <meta property="og:image" content="https://adventurewave-labs.github.io/referee/assets/referee-infographic.png">
+  <meta property="og:image:alt" content="Referee checks requests between an MCP client and its tools, then records each decision.">
+  <meta name="twitter:card" content="summary_large_image">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": ["SoftwareApplication", "WebSite"],
+    "name": "Referee",
+    "url": "https://adventurewave-labs.github.io/referee/",
+    "description": "MCP middleware for task-scoped tool authorization and verifiable decision receipts.",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS",
+    "softwareVersion": "0.1.0",
+    "license": "https://spdx.org/licenses/MIT.html",
+    "downloadUrl": "https://github.com/adventurewave-labs/referee/releases/tag/v0.1.0",
+    "publisher": {"@type": "Organization", "name": "Adventure Wave Labs"}
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="shell header">
+    <a class="brand" href="./"><img src="assets/referee-mark.svg" alt="" width="32" height="32">Referee</a>
+    <nav aria-label="Main navigation">
+      <a href="#how">How it works</a>
+      <a href="https://github.com/adventurewave-labs/referee">GitHub</a>
+    </nav>
+  </header>
+  <main id="main" class="shell">
+    <section class="hero" aria-labelledby="hero-title">
+      <div>
+        <p class="version">Referee v0.1.0</p>
+        <h1 id="hero-title">Put MCP tool calls under policy.</h1>
+        <p class="lede">Referee sits between an agent and its tools. It checks provenance and sensitivity, enforces task-scoped permissions, and records why each call was allowed, challenged, or denied.</p>
+        <div class="actions">
+          <a class="button primary" href="#downloads">Get Referee</a>
+          <a class="button secondary" href="https://github.com/adventurewave-labs/referee#quick-start">Read setup guide</a>
+        </div>
+      </div>
+      <figure class="diagram">
+        <img src="assets/referee-infographic.svg" width="1200" height="784" alt="An MCP client sends a tool request to Referee. Referee checks task scope, provenance, and sensitivity before a tool runs, then records the decision.">
+        <figcaption><a href="assets/referee-infographic.png" download>Download the infographic</a></figcaption>
+      </figure>
+    </section>
+    <section class="details" id="how" aria-labelledby="how-title">
+      <div>
+        <h2 id="how-title">How a tool call is checked</h2>
+        <p>Run Referee as an MCP proxy over stdio or streamable HTTP in JSON mode.</p>
+      </div>
+      <ol class="steps">
+        <li><h3>Check the task</h3><p>Apply the configured tool and path rules with expiring, task-scoped capabilities.</p></li>
+        <li><h3>Check the inputs</h3><p>Evaluate influence and sensitivity. Apply policy-authorized redaction or route the call for human approval when needed.</p></li>
+        <li><h3>Keep the evidence</h3><p>Verify hash-chained receipts and export receipt metadata over OTLP/HTTP if you configure a collector.</p></li>
+      </ol>
+    </section>
+    <section class="downloads" id="downloads" aria-labelledby="download-title">
+      <div>
+        <h2 id="download-title">Download Referee</h2>
+        <p>Choose a v0.1.0 archive for your machine and verify it against the release checksums.</p>
+      </div>
+      <ul class="download-list">
+        <li><a href="https://github.com/adventurewave-labs/referee/releases/download/v0.1.0/referee-v0.1.0-linux-amd64.tar.gz">Linux x86-64 <span>tar.gz</span></a></li>
+        <li><a href="https://github.com/adventurewave-labs/referee/releases/download/v0.1.0/referee-v0.1.0-darwin-arm64.tar.gz">macOS Apple Silicon <span>tar.gz</span></a></li>
+        <li><a href="https://github.com/adventurewave-labs/referee/releases/download/v0.1.0/SHA256SUMS">SHA-256 checksums</a></li>
+      </ul>
+      <a class="notes" href="https://github.com/adventurewave-labs/referee/releases/tag/v0.1.0">Read the release notes</a>
+    </section>
+  </main>
+  <footer class="shell footer">
+    <span>Adventure Wave Labs</span>
+    <a href="https://github.com/adventurewave-labs/referee/blob/main/LICENSE">MIT license</a>
+    <a href="llms.txt">llms.txt</a>
+  </footer>
+</body>
+</html>

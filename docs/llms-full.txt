@@ -1,0 +1,31 @@
+# Referee v0.1.0
+
+Referee is a Go middleware proxy that applies policy to Model Context Protocol
+(MCP) tool calls. An agent's MCP client connects to Referee, which forwards
+authorized requests to a configured upstream tool server.
+
+## Policy and decisions
+
+- YAML policies define tool capabilities, task classes, and source rules.
+- Referee represents provenance and sensitivity separately. The gate can check
+  capability scope, integrity, and confidentiality before forwarding a call.
+- Operators can configure expiring task capabilities, policy-authorized
+  argument redaction, and human approval for requests requiring a challenge.
+
+## Receipts and operations
+
+Referee records hash-chained decisions and supports signed batch-head
+verification. It HMACs argument evidence instead of writing raw tool arguments
+into receipts. Operators can export receipt metadata over OTLP/HTTP while
+retaining the on-disk log as the source of record.
+
+Referee supports stdio and streamable HTTP in JSON mode. See the threat model
+for assumptions and limitations before deploying.
+
+## Resources
+
+- [Landing and downloads](https://adventurewave-labs.github.io/referee/)
+- [README and setup](https://github.com/adventurewave-labs/referee#quick-start)
+- [Threat model](https://github.com/adventurewave-labs/referee/blob/main/docs/threat-model.md)
+- [Framework presets](https://github.com/adventurewave-labs/referee/blob/main/docs/frameworks.md)
+- [MIT license](https://github.com/adventurewave-labs/referee/blob/main/LICENSE)
